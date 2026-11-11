@@ -1,5 +1,6 @@
 # Job Agent
-n[![CI](https://github.com/GopiKrishnaGummadidala/job-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/GopiKrishnaGummadidala/job-agent/actions/workflows/ci.yml)
+
+[![CI](https://github.com/GopiKrishnaGummadidala/job-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/GopiKrishnaGummadidala/job-agent/actions/workflows/ci.yml)
 
 Finds jobs on company job boards, ranks them against your profile, prepares applications, and
 pre-fills employer forms, but **only after you approve each application, and you always click Submit yourself**.
