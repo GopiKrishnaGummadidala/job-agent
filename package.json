@@ -1,0 +1,17 @@
+{
+  "name": "job-agent",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AI Job Application Agent - discovery, matching and approval-gated applications",
+  "workspaces": ["apps/*"],
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down",
+    "migrate": "npm run migrate -w apps/api",
+    "build": "npm run build -w apps/api && npm run build -w apps/web",
+    "dev:api": "npm run dev -w apps/api",
+    "dev:web": "npm run dev -w apps/web",
+    "test": "npm test -w apps/api"
+  }
+}

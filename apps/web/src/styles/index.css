@@ -1,0 +1,15 @@
+/* MUI styles sit in the "mui" layer, so Tailwind utilities (used for layout and spacing) win
+   over component defaults and Tailwind's base reset does not fight CssBaseline. */
+@layer theme, base, mui, components, utilities;
+@import 'tailwindcss';
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+.prewrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
