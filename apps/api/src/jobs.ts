@@ -6,19 +6,34 @@ import { AuthGuard, parse, UserId } from './auth';
 import { audit, Db } from './db';
 import { loadPrefs, loadProfile } from './matching/matching.service';
 import { loadResumes, recommendResume } from './resumes';
+import { EMPLOYMENT_TYPES, SENIORITIES, WORKPLACES } from './sources/classify';
+
+/** A list filter given as "a,b" or as repeated parameters (?x=a&x=b). Repeat to keep commas in values. */
+const list = (item: z.ZodType<string>, split = true) =>
+  z
+    .union([z.string().max(2000), z.array(z.string().max(300)).max(50)])
+    .optional()
+    .transform((v) => (v === undefined ? [] : Array.isArray(v) ? v : split ? v.split(',') : [v]))
+    .transform((a) => a.map((s) => s.trim()).filter(Boolean))
+    .pipe(z.array(item).max(50) as z.ZodType<string[], string[]>);
+
+const POSTED_WITHIN: Record<string, string> = { '1d': '1 day', '3d': '3 days', '7d': '7 days', '14d': '14 days', '30d': '30 days' };
 
 const listQuery = z.object({
   minScore: z.coerce.number().int().min(0).max(100).optional(),
   status: z.enum(['new', 'saved', 'dismissed', 'all']).default('all'),
+  /** Matches title, company or location. */
   q: z.string().trim().max(100).optional(),
   includeFiltered: z.enum(['true', 'false']).default('false'),
-  /** Comma-separated CV tags, e.g. ".NET,Angular". */
-  tags: z
-    .string()
-    .max(600)
-    .optional()
-    .transform((s) => (s ?? '').split(',').map((t) => t.trim()).filter(Boolean).slice(0, 20)),
+  /** CV tags, e.g. ".NET,Angular". */
+  tags: list(z.string().max(30)),
   tagMode: z.enum(['any', 'all']).default('any'),
+  posted: z.enum(['any', '1d', '3d', '7d', '14d', '30d']).default('any'),
+  type: list(z.enum(EMPLOYMENT_TYPES)),
+  workplace: list(z.enum(WORKPLACES)),
+  seniority: list(z.enum(SENIORITIES)),
+  source: list(z.enum(['greenhouse', 'lever', 'ashby'])),
+  company: list(z.string().max(200), false),
 });
 
 @Controller('me/jobs')
@@ -32,9 +47,11 @@ export class JobsController {
   @Get()
   list(@UserId() userId: string, @Query() query: unknown) {
     const f = parse(listQuery, query);
+    const like = f.q ? `%${f.q.replace(/[\\%_]/g, (c) => `\\${c}`)}%` : null;
     return this.db.asUser(userId, (q) =>
       q(
-        `select j.id, j.company, j.title, j.location, j.remote, j.url, j.posted_at, j.first_seen_at,
+        `select j.id, j.company, j.title, j.location, j.remote, j.workplace, j.employment_type, j.seniority,
+                j.url, j.posted_at, j.first_seen_at,
                 m.score, m.ai_score, m.filtered, m.status, m.tag_hits, b.kind as source,
                 d.id as draft_id, d.status as draft_status
          from job_matches m
@@ -44,16 +61,69 @@ export class JobsController {
          where j.closed_at is null
            and ($1::int is null or m.score >= $1)
            and ($2 = 'all' and m.status <> 'dismissed' or m.status = $2)
-           and ($3::text is null or j.title ilike '%' || $3 || '%' or j.company ilike '%' || $3 || '%')
+           and ($3::text is null or j.title ilike $3 or j.company ilike $3 or j.location ilike $3)
            and ($4 or not m.filtered)
            and (cardinality($5::text[]) = 0
                 or ($6 = 'any' and m.tag_hits && $5::text[])
                 or ($6 = 'all' and m.tag_hits @> $5::text[]))
-         order by coalesce(m.ai_score, m.score) desc, j.first_seen_at desc
+           and ($7::interval is null or coalesce(j.posted_at, j.first_seen_at) >= now() - $7::interval)
+           and (cardinality($8::text[]) = 0 or j.employment_type = any($8))
+           and (cardinality($9::text[]) = 0 or j.workplace = any($9))
+           and (cardinality($10::text[]) = 0 or j.seniority = any($10))
+           and (cardinality($11::text[]) = 0 or b.kind = any($11))
+           and (cardinality($12::text[]) = 0 or j.company = any($12))
+         order by coalesce(m.ai_score, m.score) desc, coalesce(j.posted_at, j.first_seen_at) desc
          limit 1000`,
-        [f.minScore ?? null, f.status, f.q || null, f.includeFiltered === 'true', f.tags, f.tagMode],
+        [
+          f.minScore ?? null,
+          f.status,
+          like,
+          f.includeFiltered === 'true',
+          f.tags,
+          f.tagMode,
+          POSTED_WITHIN[f.posted] ?? null,
+          f.type,
+          f.workplace,
+          f.seniority,
+          f.source,
+          f.company,
+        ],
       ),
     );
+  }
+
+  /**
+   * Filter options with counts, plus the numbers needed to explain an empty result:
+   * how many jobs your preferences filtered out and how many sit below the minimum match.
+   */
+  @Get('facets')
+  facets(@UserId() userId: string, @Query() query: unknown) {
+    const { minScore } = parse(z.object({ minScore: z.coerce.number().int().min(0).max(100).default(40) }), query);
+    return this.db.asUser(userId, async (q) => {
+      const base = `from job_matches m join jobs j on j.id = m.job_id join boards b on b.id = j.board_id
+                    where j.closed_at is null`;
+      const [totals] = await q(
+        `select count(*)::int as total_open,
+                count(*) filter (where m.filtered)::int as filtered_out,
+                count(*) filter (where not m.filtered and m.score < $1)::int as below_score,
+                (select count(*) from job_sources)::int as sources
+         ${base}`,
+        [minScore],
+      );
+      const count = (col: string) =>
+        q(`select ${col} as value, count(*)::int as n ${base} and not m.filtered group by 1 order by 2 desc, 1`);
+      const profile = await loadProfile(q, userId);
+      const prefs = await loadPrefs(q, userId);
+      return {
+        ...totals,
+        profile_incomplete: !prefs.titles.length && !profile.skills.length && !prefs.keywords.length,
+        employment_type: await count('j.employment_type'),
+        workplace: await count('j.workplace'),
+        seniority: await count('j.seniority'),
+        source: await count('b.kind'),
+        company: await count('j.company'),
+      };
+    });
   }
 
   @Get(':id')

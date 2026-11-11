@@ -26,6 +26,22 @@ describe('authentication and CSRF', () => {
     assert.equal(r.status, 401);
   });
 
+  test('repeated failed sign-ins are rate limited', async () => {
+    process.env.AUTH_RATE_LIMIT = '3';
+    try {
+      const attempt = () =>
+        fetch(`${h.base}/auth/login`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-requested-with': 'job-agent' },
+          body: JSON.stringify({ email: 'limit@example.test', password: 'wrong-password' }),
+        }).then((r) => r.status);
+      const statuses = [await attempt(), await attempt(), await attempt(), await attempt()];
+      assert.deepEqual(statuses, [401, 401, 401, 429]);
+    } finally {
+      process.env.AUTH_RATE_LIMIT = '1000';
+    }
+  });
+
   test('state-changing requests without the app header are refused', async () => {
     const r = await fetch(`${h.base}/auth/login`, {
       method: 'POST',
@@ -220,6 +236,61 @@ describe('CV tags', () => {
     // Tagged CVs stay byte-for-byte unchanged.
     const [row] = (await h.owner.query('select sha256 from resume_files where id = $1', [dotnet.id])).rows;
     assert.equal(row.sha256, dotnet.sha256);
+  });
+});
+
+describe('job search filters', () => {
+  test('date posted, type, workplace, seniority, company and text filters', async () => {
+    const a = await h.user();
+    await a.call('PUT', '/me/preferences', {
+      titles: ['Engineer'], keywords: [], locations: ['Hamburg'], remote_ok: true, salary_floor: null,
+      excluded_companies: [], excluded_keywords: [], min_score: 40,
+    });
+    const { jobId: fresh } = await h.seedJob([a], { title: 'Senior Engineer', company: 'Acme, Inc.', posted_days_ago: 0 });
+    const { jobId: week } = await h.seedJob([a], {
+      title: 'Engineer (Part-time)', company: 'Beta', employment_type: 'part_time', workplace: 'hybrid',
+      location: 'Hamburg', seniority: 'mid', posted_days_ago: 5,
+    });
+    const { jobId: old } = await h.seedJob([a], {
+      title: 'Engineering Intern', company: 'Gamma', employment_type: 'internship', workplace: 'onsite',
+      location: 'Hamburg', seniority: 'intern', posted_days_ago: 40,
+    });
+    const { jobId: elsewhere } = await h.seedJob([a], { title: 'Engineer', company: 'Delta', workplace: 'onsite', location: 'Tokyo' });
+    await a.call('POST', '/me/sources/sync');
+
+    const ids = async (qs: string) => (await a.call('GET', `/me/jobs?minScore=0&${qs}`)).body.map((j: any) => j.id).sort();
+    const sorted = (...x: string[]) => x.sort();
+    assert.deepEqual(await ids('posted=1d'), [fresh]);
+    assert.deepEqual(await ids('posted=7d'), sorted(fresh, week));
+    assert.deepEqual(await ids('posted=any'), sorted(fresh, week, old));
+    assert.deepEqual(await ids('type=part_time,internship'), sorted(week, old));
+    assert.deepEqual(await ids('workplace=remote&workplace=hybrid'), sorted(fresh, week));
+    assert.deepEqual(await ids('seniority=intern'), [old]);
+    assert.deepEqual(await ids(`company=${encodeURIComponent('Acme, Inc.')}`), [fresh], 'company names may contain commas');
+    assert.deepEqual(await ids('q=hamburg'), sorted(week, old), 'search covers location');
+    assert.deepEqual(await ids('q=100%25'), [], 'LIKE wildcards in the search are matched literally');
+    assert.deepEqual(await ids('includeFiltered=true&workplace=onsite'), sorted(old, elsewhere));
+    assert.equal((await a.call('GET', '/me/jobs?type=freelance')).status, 400);
+
+    const f = (await a.call('GET', '/me/jobs/facets?minScore=40')).body;
+    assert.equal(f.total_open, 4);
+    assert.equal(f.filtered_out, 1, 'Tokyo on-site is outside preferred locations');
+    assert.equal(f.sources, 4);
+    assert.equal(f.profile_incomplete, false);
+    assert.deepEqual(f.workplace.map((x: any) => x.value).sort(), ['hybrid', 'onsite', 'remote']);
+  });
+
+  test('facets explain an empty result for a new account', async () => {
+    const a = await h.user();
+    let f = (await a.call('GET', '/me/jobs/facets')).body;
+    assert.equal(f.sources, 0);
+    assert.equal(f.profile_incomplete, true);
+    await h.seedJob([a], { workplace: 'onsite', location: 'Hamburg' });
+    await a.call('POST', '/me/sources/sync');
+    f = (await a.call('GET', '/me/jobs/facets?minScore=40')).body;
+    assert.equal(f.total_open, 1);
+    assert.equal(f.below_score, 1, 'with an empty profile an on-site job scores 30, below the default minimum of 40');
+    assert.deepEqual((await a.call('GET', '/me/jobs?minScore=40')).body, []);
   });
 });
 

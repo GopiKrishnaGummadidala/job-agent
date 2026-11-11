@@ -15,7 +15,14 @@ export const config = {
   appDbPassword: env.APP_DB_PASSWORD ?? 'app_dev_password',
   webOrigin: env.WEB_ORIGIN ?? 'http://localhost:5173',
   cookieSecure: env.COOKIE_SECURE === 'true',
-  scheduler: env.SCHEDULER !== 'off',
+  // Read on use, so tests can change them after this module loads.
+  get scheduler() {
+    return process.env.SCHEDULER !== 'off';
+  },
+  /** Sign-in and sign-up attempts allowed per 15 minutes per IP (and email). */
+  get authRateLimit() {
+    return Number(process.env.AUTH_RATE_LIMIT ?? 10);
+  },
   // Browser assist opens a visible browser on the machine running the API, so it is for local use only.
   assist: env.ASSIST === 'local',
   ollamaBaseUrl: env.OLLAMA_BASE_URL ?? 'http://localhost:11434',

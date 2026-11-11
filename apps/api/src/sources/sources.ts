@@ -79,15 +79,17 @@ export class SourcesService implements OnModuleInit, OnModuleDestroy {
     // One statement, so now() is identical for the upsert and for closing postings that disappeared.
     await this.db.query(
       `with up as (
-         insert into jobs (board_id, external_id, company, title, location, remote, url, apply_url,
-                           description, content_hash, posted_at, last_seen_at)
-         select $1, x.external_id, x.company, x.title, x.location, x.remote, x.url, x.apply_url,
-                x.description, x.content_hash, x.posted_at, now()
+         insert into jobs (board_id, external_id, company, title, location, remote, employment_type, workplace,
+                           seniority, url, apply_url, description, content_hash, posted_at, last_seen_at)
+         select $1, x.external_id, x.company, x.title, x.location, x.remote, x.employment_type, x.workplace,
+                x.seniority, x.url, x.apply_url, x.description, x.content_hash, x.posted_at, now()
          from jsonb_to_recordset($2::jsonb) as x(external_id text, company text, title text, location text,
-              remote boolean, url text, apply_url text, description text, content_hash text, posted_at timestamptz)
+              remote boolean, employment_type text, workplace text, seniority text, url text, apply_url text,
+              description text, content_hash text, posted_at timestamptz)
          on conflict (board_id, external_id) do update set
            company = excluded.company, title = excluded.title, location = excluded.location,
-           remote = excluded.remote, url = excluded.url, apply_url = excluded.apply_url,
+           remote = excluded.remote, employment_type = excluded.employment_type, workplace = excluded.workplace,
+           seniority = excluded.seniority, url = excluded.url, apply_url = excluded.apply_url,
            description = excluded.description, content_hash = excluded.content_hash,
            posted_at = excluded.posted_at, last_seen_at = now(), closed_at = null
          returning id

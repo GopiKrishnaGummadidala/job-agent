@@ -3,68 +3,181 @@ import {
   Autocomplete,
   Box,
   Button,
+  Checkbox,
   Chip,
   Divider,
   Drawer,
   FormControlLabel,
   IconButton,
   Link,
+  ListItemText,
   MenuItem,
   Paper,
   Slider,
   Switch,
+  TextField,
   ToggleButton,
   ToggleButtonGroup,
-  TextField,
   Tooltip,
   Typography,
 } from '@mui/material';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Bookmark, ExternalLink, RefreshCw, Sparkles, X } from 'lucide-react';
-import { useDeferredValue, useState } from 'react';
+import { Bookmark, ExternalLink, FilterX, RefreshCw, Sparkles, X } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router-dom';
 import { EmptyState, ErrorAlert, LoadingBlock, PageHeader } from '../../components/ui';
-import { api, fmtDate } from '../../lib/api';
+import { api } from '../../lib/api';
 import { statusColor, statusLabel } from '../../styles/theme';
+
+const POSTED = [
+  { value: 'any', label: 'Any time' },
+  { value: '1d', label: 'Past 24 hours' },
+  { value: '3d', label: 'Past 3 days' },
+  { value: '7d', label: 'Past week' },
+  { value: '14d', label: 'Past 2 weeks' },
+  { value: '30d', label: 'Past month' },
+];
+
+export const EMPLOYMENT_LABEL: Record<string, string> = {
+  full_time: 'Full-time',
+  part_time: 'Part-time',
+  contract: 'Contract / freelance',
+  temporary: 'Temporary',
+  internship: 'Internship',
+  working_student: 'Working student',
+};
+export const WORKPLACE_LABEL: Record<string, string> = { remote: 'Remote', hybrid: 'Hybrid', onsite: 'On-site' };
+const SENIORITY_LABEL: Record<string, string> = {
+  intern: 'Intern / student',
+  junior: 'Junior',
+  mid: 'Mid-level',
+  senior: 'Senior',
+  staff: 'Staff / principal',
+  lead: 'Lead / manager',
+};
+const SOURCE_LABEL: Record<string, string> = { greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby' };
+
+/** URL keys for list filters; each value is a repeated search parameter. */
+const LIST_KEYS = ['type', 'workplace', 'seniority', 'source', 'company', 'tags'] as const;
+const FILTER_KEYS = ['q', 'posted', 'min', 'status', 'hidden', 'tagMode', ...LIST_KEYS];
+
+interface Facet {
+  value: string;
+  n: number;
+}
+
+function ago(v: string) {
+  const days = Math.floor((Date.now() - new Date(v).getTime()) / 86_400_000);
+  if (days <= 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  if (days < 30) return `${days} days ago`;
+  return new Date(v).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function MultiSelect({
+  label,
+  value,
+  onChange,
+  labels,
+  facets,
+}: {
+  label: string;
+  value: string[];
+  onChange: (v: string[]) => void;
+  labels: Record<string, string>;
+  facets?: Facet[];
+}) {
+  const count = (v: string) => facets?.find((f) => f.value === v)?.n ?? 0;
+  return (
+    <TextField
+      select
+      label={label}
+      value={value}
+      onChange={(e) => {
+        const v = e.target.value as unknown as string[] | string;
+        onChange(typeof v === 'string' ? v.split(',') : v);
+      }}
+      slotProps={{
+        inputLabel: { shrink: true },
+        select: {
+          multiple: true,
+          displayEmpty: true,
+          renderValue: (sel) => {
+            const s = sel as string[];
+            return s.length ? s.map((v) => labels[v] ?? v).join(', ') : <span className="opacity-60">Any</span>;
+          },
+        },
+      }}
+    >
+      {Object.entries(labels).map(([v, l]) => (
+        <MenuItem key={v} value={v} dense>
+          <Checkbox size="small" checked={value.includes(v)} sx={{ py: 0 }} />
+          <ListItemText primary={l} secondary={facets ? `${count(v)} jobs` : undefined} />
+        </MenuItem>
+      ))}
+    </TextField>
+  );
+}
 
 export function JobsPage() {
   const qc = useQueryClient();
   const [params, setParams] = useSearchParams();
-  const [search, setSearch] = useState('');
-  const q = useDeferredValue(search);
-  const [minScore, setMinScore] = useState(40);
-  const [status, setStatus] = useState('all');
-  const [showFiltered, setShowFiltered] = useState(false);
-  const [tags, setTags] = useState<string[]>([]);
-  const [tagMode, setTagMode] = useState<'any' | 'all'>('any');
+  const profile = useQuery({ queryKey: ['profile'], queryFn: () => api('/me/profile') });
+  const defaultMin = profile.data?.preferences.min_score ?? 40;
+
+  const get = (k: string, d = '') => params.get(k) ?? d;
+  const getList = (k: string) => params.getAll(k);
+  const minScore = Number(get('min', String(defaultMin)));
+  const [minDraft, setMinDraft] = useState(minScore);
+  useEffect(() => setMinDraft(minScore), [minScore]);
   const selected = params.get('job');
 
+  /** Updates filters in the URL; empty values are removed so links stay short. */
+  const update = (patch: Record<string, string | string[] | null>) =>
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        for (const [k, v] of Object.entries(patch)) {
+          next.delete(k);
+          if (Array.isArray(v)) v.forEach((x) => next.append(k, x));
+          else if (v) next.set(k, v);
+        }
+        return next;
+      },
+      { replace: true },
+    );
+  const clearFilters = () => update(Object.fromEntries(FILTER_KEYS.map((k) => [k, null])));
+  const activeFilters = FILTER_KEYS.filter((k) => params.has(k)).length;
+
+  const apiQuery = useMemo(() => {
+    const s = new URLSearchParams();
+    s.set('minScore', String(minScore));
+    s.set('status', get('status', 'all'));
+    s.set('posted', get('posted', 'any'));
+    s.set('includeFiltered', String(get('hidden') === '1'));
+    s.set('tagMode', get('tagMode', 'any'));
+    if (get('q')) s.set('q', get('q'));
+    for (const k of LIST_KEYS) getList(k).forEach((v) => s.append(k, v));
+    return s.toString();
+  }, [params, minScore]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const jobs = useQuery({ queryKey: ['jobs', apiQuery], queryFn: () => api<any[]>(`/me/jobs?${apiQuery}`), enabled: !profile.isLoading });
+  const facets = useQuery({ queryKey: ['jobs', 'facets', minScore], queryFn: () => api(`/me/jobs/facets?minScore=${minScore}`) });
   const tagOptions = useQuery({ queryKey: ['resume-tags'], queryFn: () => api<{ tag: string; resumes: number }[]>('/me/resumes/tags') });
-  const jobs = useQuery({
-    queryKey: ['jobs', { q, minScore, status, showFiltered, tags, tagMode }],
-    queryFn: () =>
-      api(
-        `/me/jobs?${new URLSearchParams({
-          q,
-          minScore: String(minScore),
-          status,
-          includeFiltered: String(showFiltered),
-          tags: tags.join(','),
-          tagMode,
-        })}`,
-      ),
-  });
   const sync = useMutation({
     mutationFn: () => api('/me/sources/sync', { method: 'POST' }),
     onSuccess: () => qc.invalidateQueries(),
   });
 
+  const tags = getList('tags');
+  const f = facets.data;
+
   const columns: GridColDef[] = [
     {
       field: 'score',
       headerName: 'Match',
-      width: 90,
+      width: 80,
       valueGetter: (_, row) => row.ai_score ?? row.score,
       renderCell: (p) => (
         <Tooltip title={p.row.ai_score != null ? `AI score (rule score ${p.row.score})` : 'Rule-based score'}>
@@ -73,12 +186,14 @@ export function JobsPage() {
       ),
     },
     { field: 'title', headerName: 'Role', flex: 2, minWidth: 220 },
-    { field: 'company', headerName: 'Company', flex: 1, minWidth: 120 },
-    { field: 'location', headerName: 'Location', flex: 1, minWidth: 140 },
+    { field: 'company', headerName: 'Company', flex: 1, minWidth: 110 },
+    { field: 'location', headerName: 'Location', flex: 1, minWidth: 130 },
+    { field: 'workplace', headerName: 'Workplace', width: 100, valueFormatter: (v) => WORKPLACE_LABEL[v] ?? v },
+    { field: 'employment_type', headerName: 'Type', width: 120, valueFormatter: (v) => EMPLOYMENT_LABEL[v] ?? v },
     {
       field: 'tag_hits',
       headerName: 'CV tags',
-      width: 160,
+      width: 140,
       sortable: false,
       renderCell: (p) => (
         <Box className="flex h-full items-center gap-1 overflow-hidden">
@@ -88,12 +203,17 @@ export function JobsPage() {
         </Box>
       ),
     },
-    { field: 'source', headerName: 'Source', width: 100 },
-    { field: 'posted_at', headerName: 'Posted', width: 110, valueFormatter: (v) => fmtDate(v) },
+    {
+      field: 'posted',
+      headerName: 'Posted',
+      width: 110,
+      valueGetter: (_, row) => row.posted_at ?? row.first_seen_at,
+      valueFormatter: (v) => ago(v),
+    },
     {
       field: 'draft_status',
       headerName: 'Application',
-      width: 150,
+      width: 140,
       renderCell: (p) =>
         p.value ? (
           <Chip size="small" label={statusLabel[p.value]} color={statusColor[p.value]} variant="outlined" />
@@ -103,88 +223,173 @@ export function JobsPage() {
     },
   ];
 
+  const noBoards = f && f.sources === 0;
+
   return (
     <>
       <PageHeader
         title="Job Explorer"
         subtitle="Jobs from your boards, ranked by rule-based match. Use AI assessment on the ones worth a closer look."
         actions={
-          <Button startIcon={<RefreshCw size={16} />} onClick={() => sync.mutate()} disabled={sync.isPending}>
+          <Button startIcon={<RefreshCw size={16} />} onClick={() => sync.mutate()} disabled={sync.isPending || noBoards}>
             {sync.isPending ? 'Refreshing…' : 'Refresh boards'}
           </Button>
         }
       />
       {sync.data?.errors?.length > 0 && <Alert severity="warning" className="mb-3">{sync.data.errors.join(' ')}</Alert>}
       <ErrorAlert error={sync.error} />
-      <Paper className="mb-3 grid gap-4 p-4 md:grid-cols-[2fr_1.4fr_1fr_auto] md:items-center">
-        <TextField label="Search role or company" value={search} onChange={(e) => setSearch(e.target.value)} />
-        <Box className="px-2">
-          <Typography variant="caption" color="text.secondary" id="min-score-label">
-            Minimum match: {minScore}
-          </Typography>
-          <Slider size="small" value={minScore} onChange={(_, v) => setMinScore(v as number)} min={0} max={100} step={5} aria-labelledby="min-score-label" />
-        </Box>
-        <TextField select label="Status" value={status} onChange={(e) => setStatus(e.target.value)}>
-          <MenuItem value="all">All but dismissed</MenuItem>
-          <MenuItem value="new">New</MenuItem>
-          <MenuItem value="saved">Saved</MenuItem>
-          <MenuItem value="dismissed">Dismissed</MenuItem>
-        </TextField>
-        <FormControlLabel control={<Switch checked={showFiltered} onChange={(e) => setShowFiltered(e.target.checked)} />} label="Show filtered out" />
-        <Box className="flex flex-wrap items-center gap-3 md:col-span-4">
-          {tagOptions.data?.length ? (
-            <>
-              <Autocomplete
-                multiple
-                className="min-w-64 flex-1"
-                options={tagOptions.data.map((t) => t.tag)}
-                value={tags}
-                onChange={(_, v) => setTags(v)}
-                renderInput={(p) => <TextField {...p} label="CV tags" placeholder={tags.length ? '' : 'e.g. .NET, Node, Angular'} />}
-              />
-              <ToggleButtonGroup
-                size="small"
-                exclusive
-                value={tagMode}
-                onChange={(_, v) => v && setTagMode(v)}
-                aria-label="How to combine tags"
-                disabled={tags.length < 2}
-              >
-                <ToggleButton value="any">Any tag</ToggleButton>
-                <ToggleButton value="all">All tags</ToggleButton>
-              </ToggleButtonGroup>
-            </>
-          ) : (
-            <Typography variant="body2" color="text.secondary">
-              Tag your CVs (e.g. .NET, Node, Angular) in the <Link component={RouterLink} to="/resumes">Resume Library</Link> to filter jobs by them.
-            </Typography>
-          )}
-        </Box>
-      </Paper>
-      {jobs.isLoading ? (
-        <LoadingBlock rows={8} />
-      ) : jobs.error ? (
-        <ErrorAlert error={jobs.error} />
-      ) : jobs.data.length === 0 && !q && minScore <= 40 && status === 'all' && !tags.length ? (
-        <EmptyState title="No jobs yet" action={<Button component={RouterLink} to="/settings" variant="contained">Add a job board</Button>}>
-          Add Greenhouse, Lever or Ashby boards of companies you like. Jobs are fetched from their public job APIs.
+      {f?.profile_incomplete && !noBoards && (
+        <Alert
+          severity="info"
+          className="mb-3"
+          action={<Button component={RouterLink} to="/profile" color="inherit" size="small">Complete profile</Button>}
+        >
+          Your profile has no target roles or skills yet, so jobs cannot be ranked (most score 30–40 and many are hidden below the minimum match). Add them to rank jobs properly.
+        </Alert>
+      )}
+
+      {noBoards ? (
+        <EmptyState title="No job boards yet" action={<Button component={RouterLink} to="/settings" variant="contained">Add a job board</Button>}>
+          Job Explorer searches the boards you add. Paste a company's careers page from Greenhouse, Lever or Ashby in Sources &amp; Settings,
+          for example https://job-boards.greenhouse.io/gitlab.
         </EmptyState>
       ) : (
-        <Paper sx={{ height: 'calc(100vh - 330px)', minHeight: 420 }}>
-          <DataGrid
-            rows={jobs.data}
-            columns={columns}
-            density="compact"
-            disableRowSelectionOnClick
-            onRowClick={(p) => setParams({ job: String(p.id) })}
-            initialState={{ pagination: { paginationModel: { pageSize: 50 } } }}
-            pageSizeOptions={[25, 50, 100]}
-            sx={{ border: 0, '& .MuiDataGrid-row': { cursor: 'pointer' } }}
-          />
-        </Paper>
+        <>
+          <Paper className="mb-3 flex flex-col gap-3 p-4">
+            <Box className="grid gap-3 md:grid-cols-[2fr_1fr_1.2fr_1fr]">
+              <TextField label="Search role, company or location" value={get('q')} onChange={(e) => update({ q: e.target.value })} />
+              <TextField select label="Date posted" value={get('posted', 'any')} onChange={(e) => update({ posted: e.target.value === 'any' ? null : e.target.value })}>
+                {POSTED.map((p) => (
+                  <MenuItem key={p.value} value={p.value}>{p.label}</MenuItem>
+                ))}
+              </TextField>
+              <Box className="px-2">
+                <Typography variant="caption" color="text.secondary" id="min-score-label">
+                  Minimum match: {minDraft}
+                </Typography>
+                <Slider
+                  size="small"
+                  value={minDraft}
+                  onChange={(_, v) => setMinDraft(v as number)}
+                  onChangeCommitted={(_, v) => update({ min: v === defaultMin ? null : String(v) })}
+                  min={0}
+                  max={100}
+                  step={5}
+                  aria-labelledby="min-score-label"
+                />
+              </Box>
+              <TextField select label="Status" value={get('status', 'all')} onChange={(e) => update({ status: e.target.value === 'all' ? null : e.target.value })}>
+                <MenuItem value="all">All but dismissed</MenuItem>
+                <MenuItem value="new">New</MenuItem>
+                <MenuItem value="saved">Saved</MenuItem>
+                <MenuItem value="dismissed">Dismissed</MenuItem>
+              </TextField>
+            </Box>
+            <Box className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+              <MultiSelect label="Employment type" value={getList('type')} onChange={(v) => update({ type: v })} labels={EMPLOYMENT_LABEL} facets={f?.employment_type} />
+              <MultiSelect label="Workplace" value={getList('workplace')} onChange={(v) => update({ workplace: v })} labels={WORKPLACE_LABEL} facets={f?.workplace} />
+              <MultiSelect label="Seniority" value={getList('seniority')} onChange={(v) => update({ seniority: v })} labels={SENIORITY_LABEL} facets={f?.seniority} />
+              <MultiSelect label="Source" value={getList('source')} onChange={(v) => update({ source: v })} labels={SOURCE_LABEL} facets={f?.source} />
+              <Autocomplete
+                multiple
+                limitTags={1}
+                options={(f?.company ?? []).map((c: Facet) => c.value)}
+                getOptionLabel={(o) => `${o} (${f?.company.find((c: Facet) => c.value === o)?.n ?? 0})`}
+                value={getList('company')}
+                onChange={(_, v) => update({ company: v })}
+                renderValue={(vals, getItemProps) =>
+                  vals.map((o, index) => {
+                    const { key, ...rest } = getItemProps({ index });
+                    return <Chip key={key} size="small" label={o} {...rest} />;
+                  })
+                }
+                renderInput={(p) => <TextField {...p} label="Company" placeholder={getList('company').length ? '' : 'Any'} slotProps={{ ...p.slotProps, inputLabel: { shrink: true } }} />}
+              />
+            </Box>
+            <Box className="flex flex-wrap items-center gap-3">
+              {tagOptions.data?.length ? (
+                <>
+                  <Autocomplete
+                    multiple
+                    className="min-w-64 flex-1"
+                    options={tagOptions.data.map((t) => t.tag)}
+                    value={tags}
+                    onChange={(_, v) => update({ tags: v })}
+                    renderInput={(p) => <TextField {...p} label="CV tags" placeholder={tags.length ? '' : 'e.g. .NET, Node, Angular'} />}
+                  />
+                  <ToggleButtonGroup
+                    size="small"
+                    exclusive
+                    value={get('tagMode', 'any')}
+                    onChange={(_, v) => v && update({ tagMode: v === 'any' ? null : v })}
+                    aria-label="How to combine tags"
+                    disabled={tags.length < 2}
+                  >
+                    <ToggleButton value="any">Any tag</ToggleButton>
+                    <ToggleButton value="all">All tags</ToggleButton>
+                  </ToggleButtonGroup>
+                </>
+              ) : (
+                <Typography variant="body2" color="text.secondary" className="flex-1">
+                  Tag your CVs (e.g. .NET, Node, Angular) in the <Link component={RouterLink} to="/resumes">Resume Library</Link> to filter jobs by them.
+                </Typography>
+              )}
+              <FormControlLabel
+                control={<Switch checked={get('hidden') === '1'} onChange={(e) => update({ hidden: e.target.checked ? '1' : null })} />}
+                label="Include jobs my preferences filter out"
+              />
+              <Button startIcon={<FilterX size={16} />} onClick={clearFilters} disabled={!activeFilters}>
+                Clear filters{activeFilters ? ` (${activeFilters})` : ''}
+              </Button>
+            </Box>
+          </Paper>
+
+          {jobs.isLoading || profile.isLoading ? (
+            <LoadingBlock rows={8} />
+          ) : jobs.error ? (
+            <ErrorAlert error={jobs.error} />
+          ) : jobs.data!.length === 0 ? (
+            <EmptyState
+              title={f?.total_open === 0 ? 'Your boards have no open jobs' : 'No jobs match these filters'}
+              action={
+                f?.total_open === 0 ? (
+                  <Button variant="contained" onClick={() => sync.mutate()} disabled={sync.isPending}>Refresh boards</Button>
+                ) : (
+                  <Box className="flex flex-wrap justify-center gap-2">
+                    {activeFilters > 0 && <Button variant="contained" onClick={clearFilters}>Clear filters</Button>}
+                    {f?.below_score > 0 && minScore > 0 && <Button onClick={() => update({ min: '0' })}>Show all match scores</Button>}
+                    {f?.filtered_out > 0 && get('hidden') !== '1' && <Button onClick={() => update({ hidden: '1' })}>Include filtered-out jobs</Button>}
+                  </Box>
+                )
+              }
+            >
+              {f && f.total_open > 0 && (
+                <>
+                  Your boards have {f.total_open} open jobs. {f.below_score > 0 && `${f.below_score} score below your minimum match of ${minScore}. `}
+                  {f.filtered_out > 0 && `${f.filtered_out} are excluded by your location or keyword preferences. `}
+                  The other filters above narrow it further.
+                </>
+              )}
+              {f?.total_open === 0 && 'Refresh to fetch the latest postings, or add more boards in Sources & Settings.'}
+            </EmptyState>
+          ) : (
+            <Paper sx={{ height: 'calc(100vh - 400px)', minHeight: 420 }}>
+              <DataGrid
+                rows={jobs.data}
+                columns={columns}
+                density="compact"
+                disableRowSelectionOnClick
+                onRowClick={(p) => update({ job: String(p.id) })}
+                initialState={{ pagination: { paginationModel: { pageSize: 50 } } }}
+                pageSizeOptions={[25, 50, 100]}
+                sx={{ border: 0, '& .MuiDataGrid-row': { cursor: 'pointer' } }}
+              />
+            </Paper>
+          )}
+        </>
       )}
-      <Drawer anchor="right" open={!!selected} onClose={() => setParams({})} slotProps={{ paper: { sx: { width: { xs: '100%', sm: 560 } } } }}>
-        {selected && <JobDetail id={selected} onClose={() => setParams({})} />}
+      <Drawer anchor="right" open={!!selected} onClose={() => update({ job: null })} slotProps={{ paper: { sx: { width: { xs: '100%', sm: 560 } } } }}>
+        {selected && <JobDetail id={selected} onClose={() => update({ job: null })} />}
       </Drawer>
     </>
   );
@@ -224,8 +429,14 @@ function JobDetail({ id, onClose }: { id: string; onClose: () => void }) {
         <Box className="min-w-0 flex-1">
           <Typography variant="h6" component="h2">{j.title}</Typography>
           <Typography color="text.secondary">
-            {j.company} · {j.location || 'Location not stated'} {j.remote && '· Remote'}
+            {j.company} · {j.location || 'Location not stated'}
           </Typography>
+          <Box className="mt-1 flex flex-wrap gap-1">
+            <Chip size="small" label={WORKPLACE_LABEL[j.workplace] ?? j.workplace} />
+            <Chip size="small" label={EMPLOYMENT_LABEL[j.employment_type] ?? j.employment_type} />
+            <Chip size="small" label={SENIORITY_LABEL[j.seniority] ?? j.seniority} />
+            <Chip size="small" variant="outlined" label={`Posted ${ago(j.posted_at ?? j.first_seen_at).toLowerCase()}`} />
+          </Box>
         </Box>
         <IconButton onClick={onClose} aria-label="Close"><X size={18} /></IconButton>
       </Box>

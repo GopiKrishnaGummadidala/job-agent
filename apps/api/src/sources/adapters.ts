@@ -1,4 +1,14 @@
 import { createHash } from 'node:crypto';
+import {
+  employmentFromLabel,
+  EmploymentType,
+  inferEmployment,
+  inferSeniority,
+  inferWorkplace,
+  Seniority,
+  Workplace,
+  workplaceFromLabel,
+} from './classify';
 
 /** Public, documented job-board endpoints only. No scraping, no authentication, no automation. */
 
@@ -10,6 +20,9 @@ export interface NormalizedJob {
   title: string;
   location: string;
   remote: boolean;
+  employment_type: EmploymentType;
+  workplace: Workplace;
+  seniority: Seniority;
   url: string;
   apply_url: string;
   description: string;
@@ -65,13 +78,33 @@ export function htmlToText(html: string): string {
 const companyFromToken = (token: string) =>
   token.replace(/[-_.]+/g, ' ').replace(/\b\p{L}/gu, (c) => c.toUpperCase());
 
-function finish(j: Omit<NormalizedJob, 'content_hash' | 'remote'> & { remote?: boolean }): NormalizedJob {
-  const description = j.description.slice(0, MAX_DESCRIPTION);
-  const remote = j.remote ?? /\bremote\b/i.test(j.location);
+type RawJob = Omit<NormalizedJob, 'content_hash' | 'remote' | 'employment_type' | 'workplace' | 'seniority'> & {
+  /** The board's own employment label, e.g. Lever "Full-time" or Ashby "PartTime". */
+  employmentLabel?: unknown;
+  /** The board's own workplace label, e.g. "hybrid" or "OnSite". */
+  workplaceLabel?: unknown;
+  /** Used only when the board gives no workplace label. */
+  remoteFlag?: boolean;
+};
+
+function finish(j: RawJob): NormalizedJob {
+  const { employmentLabel, workplaceLabel, remoteFlag, ...rest } = j;
+  const description = rest.description.slice(0, MAX_DESCRIPTION);
+  const employment_type = employmentFromLabel(employmentLabel) ?? inferEmployment(rest.title, description);
+  const workplace =
+    workplaceFromLabel(workplaceLabel) ?? (remoteFlag ? 'remote' : inferWorkplace(rest.title, rest.location, description));
   const content_hash = createHash('sha256')
-    .update(JSON.stringify([j.title, j.location, j.apply_url, description]))
+    .update(JSON.stringify([rest.title, rest.location, rest.apply_url, description]))
     .digest('hex');
-  return { ...j, description, remote, content_hash };
+  return {
+    ...rest,
+    description,
+    remote: workplace === 'remote',
+    employment_type,
+    workplace,
+    seniority: inferSeniority(rest.title, employment_type),
+    content_hash,
+  };
 }
 
 const iso = (v: unknown): string | null => {
@@ -120,7 +153,8 @@ export async function fetchBoard(kind: BoardKind, token: string): Promise<Normal
         company: companyFromToken(token),
         title: String(j.text ?? '').trim(),
         location: j.categories?.location ?? '',
-        remote: j.workplaceType === 'remote' ? true : undefined,
+        employmentLabel: j.categories?.commitment,
+        workplaceLabel: j.workplaceType,
         url: j.hostedUrl,
         apply_url: j.applyUrl ?? j.hostedUrl,
         description: [j.descriptionPlain, ...lists, j.additionalPlain].filter(Boolean).join('\n\n').trim(),
@@ -138,7 +172,10 @@ export async function fetchBoard(kind: BoardKind, token: string): Promise<Normal
         company: companyFromToken(token),
         title: String(j.title ?? '').trim(),
         location: j.location ?? '',
-        remote: j.isRemote === true ? true : undefined,
+        employmentLabel: j.employmentType,
+        // Ashby sets isRemote on hybrid jobs too, so its workplaceType wins when present.
+        workplaceLabel: j.workplaceType,
+        remoteFlag: j.isRemote === true && !j.workplaceType,
         url: j.jobUrl,
         apply_url: j.applyUrl ?? j.jobUrl,
         description: j.descriptionPlain ?? htmlToText(String(j.descriptionHtml ?? '')),

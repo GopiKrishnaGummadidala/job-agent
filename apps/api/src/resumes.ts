@@ -109,7 +109,7 @@ export function loadResumes(q: Q) {
   );
 }
 
-const tagSchema = z.array(z.string().trim().max(30)).max(20);
+const tagSchema = z.array(z.string().trim().max(30).regex(/^[^,]*$/, 'Tags cannot contain commas')).max(20);
 
 /**
  * Replaces a resume's tags. Tags are compared case-insensitively and reuse the spelling already

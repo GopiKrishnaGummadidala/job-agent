@@ -56,7 +56,7 @@ export class AuthService {
 
   constructor(private db: Db) {}
 
-  /** 10 attempts per 15 minutes per key; in-memory is enough for a single instance. */
+  /** AUTH_RATE_LIMIT (default 10) attempts per 15 minutes per key; in-memory is enough for a single instance. */
   throttle(key: string) {
     const now = Date.now();
     const a = this.attempts.get(key);
@@ -64,7 +64,7 @@ export class AuthService {
       this.attempts.set(key, { count: 1, reset: now + 15 * 60_000 });
       return;
     }
-    if (++a.count > 10) throw new HttpException('Too many attempts. Try again later.', 429);
+    if (++a.count > config.authRateLimit) throw new HttpException('Too many attempts. Try again later.', 429);
   }
 
   async register(email: string, password: string): Promise<string> {

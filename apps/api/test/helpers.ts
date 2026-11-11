@@ -5,6 +5,8 @@ import { createApp } from '../src/app';
 import { config } from '../src/config';
 
 process.env.SCHEDULER = 'off';
+// The suite registers many accounts from one IP; production keeps the default limit.
+process.env.AUTH_RATE_LIMIT = '1000';
 
 export interface TestUser {
   id: string;
@@ -67,17 +69,41 @@ export class Harness {
   }
 
   /** Creates a board with one open job without touching the network, and subscribes the users. */
-  async seedJob(users: TestUser[], over: Partial<{ title: string; description: string; location: string }> = {}) {
+  async seedJob(
+    users: TestUser[],
+    over: Partial<{
+      title: string;
+      description: string;
+      location: string;
+      company: string;
+      employment_type: string;
+      workplace: string;
+      seniority: string;
+      posted_days_ago: number;
+    }> = {},
+  ) {
     const token = `test-${randomUUID().slice(0, 8)}`;
     const [board] = (
       await this.owner.query(`insert into boards (kind, token, company_name, last_synced_at) values ('greenhouse', $1, 'Acme', now()) returning id`, [token])
     ).rows;
     const [job] = (
       await this.owner.query(
-        `insert into jobs (board_id, external_id, company, title, location, remote, url, apply_url, description, content_hash)
-         values ($1, '1', 'Acme', $2, $3, true, 'https://example.test/job/1', 'https://example.test/job/1/apply', $4, 'h1')
+        `insert into jobs (board_id, external_id, company, title, location, remote, url, apply_url, description, content_hash,
+                           employment_type, workplace, seniority, posted_at)
+         values ($1, '1', $5, $2, $3, $7 = 'remote', 'https://example.test/job/1', 'https://example.test/job/1/apply', $4, 'h1',
+                 $6, $7, $8, now() - make_interval(days => $9))
          returning id`,
-        [board.id, over.title ?? 'Senior Backend Engineer', over.location ?? 'Remote', over.description ?? 'We use TypeScript and PostgreSQL.'],
+        [
+          board.id,
+          over.title ?? 'Senior Backend Engineer',
+          over.location ?? 'Remote',
+          over.description ?? 'We use TypeScript and PostgreSQL.',
+          over.company ?? 'Acme',
+          over.employment_type ?? 'full_time',
+          over.workplace ?? 'remote',
+          over.seniority ?? 'senior',
+          over.posted_days_ago ?? 0,
+        ],
       )
     ).rows;
     for (const u of users) {

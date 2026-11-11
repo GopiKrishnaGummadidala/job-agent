@@ -38,7 +38,11 @@ Open http://localhost:5173, create an account, then:
    `.NET` also finds C#, `Node` finds Node.js.
 3. **Sources & Settings**: paste board URLs, e.g. `https://job-boards.greenhouse.io/gitlab`,
    `https://jobs.ashbyhq.com/ramp`, `https://jobs.lever.co/<company>`.
-4. **Job Explorer**: open a job and choose **Prepare application**.
+4. **Job Explorer**: filter by date posted (24 hours to a month), employment type, workplace
+   (remote/hybrid/on-site), seniority, source, company and CV tags. Filters are kept in the page
+   address, so you can bookmark a search. Employment type and workplace come from Lever and Ashby
+   directly and are inferred from the title and description for Greenhouse. Open a job and choose
+   **Prepare application**.
 5. **Approval Queue**: check the resume, cover letter and answers, then **Approve**.
    **Open & pre-fill apply form** opens a browser window with the employer's form filled in;
    review it, submit it there, then click **I submitted it**.
