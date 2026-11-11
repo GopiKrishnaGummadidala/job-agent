@@ -20,7 +20,7 @@ import { AuthGuard, parse, UserId } from '../auth';
 import { config } from '../config';
 import { audit, Db } from '../db';
 import { MatchingService } from '../matching/matching.service';
-import { BoardKind, fetchBoard, parseBoardRef } from './adapters';
+import { BoardKind, boardRefHelp, fetchBoard, parseBoardRef } from './adapters';
 
 const MIN_RESYNC_MINUTES = 15;
 
@@ -138,7 +138,7 @@ export class SourcesController {
     const { kind, ref } = parse(addSchema, body);
     const parsed = parseBoardRef(ref, kind);
     if (!parsed) {
-      throw new BadRequestException('Paste a Greenhouse, Lever or Ashby board URL, or choose a type and enter its token.');
+      throw new BadRequestException(boardRefHelp(ref, kind));
     }
     const [board] = await this.db.query(
       `insert into boards (kind, token) values ($1, $2)

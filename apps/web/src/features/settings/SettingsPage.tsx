@@ -53,8 +53,11 @@ function SourcesCard() {
     <Paper className="p-4">
       <Typography variant="h6" component="h2">Job boards</Typography>
       <Typography variant="body2" color="text.secondary" className="mb-3">
-        Paste a company's careers board URL from Greenhouse, Lever or Ashby (for example https://job-boards.greenhouse.io/gitlab), or pick a type
-        and enter the company token. Boards are refreshed every few hours using their public job APIs.
+        Paste the job board address of a company you want to work for. Supported formats:
+        <code className="mx-1">job-boards.greenhouse.io/&lt;company&gt;</code>,
+        <code className="mx-1">jobs.lever.co/&lt;company&gt;</code> and
+        <code className="mx-1">jobs.ashbyhq.com/&lt;company&gt;</code>
+        (e.g. https://jobs.ashbyhq.com/ashby). A link to any job posting on the board works too. Boards refresh every few hours.
       </Typography>
       <Box
         component="form"

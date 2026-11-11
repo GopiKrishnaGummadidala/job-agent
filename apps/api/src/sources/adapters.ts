@@ -49,6 +49,41 @@ export function parseBoardRef(input: string, kind?: BoardKind): { kind: BoardKin
   return null;
 }
 
+const BOARD_HOSTS: { kind: BoardKind; name: string; vendor: RegExp; board: string }[] = [
+  { kind: 'greenhouse', name: 'Greenhouse', vendor: /(^|\.)greenhouse\.(io|com)$/i, board: 'https://job-boards.greenhouse.io/<company>' },
+  { kind: 'lever', name: 'Lever', vendor: /(^|\.)lever\.co$/i, board: 'https://jobs.lever.co/<company>' },
+  { kind: 'ashby', name: 'Ashby', vendor: /(^|\.)ashbyhq\.com$/i, board: 'https://jobs.ashbyhq.com/<company>' },
+];
+
+/** Explains why a pasted value is not a usable board reference, with the address format to use instead. */
+export function boardRefHelp(input: string, kind?: BoardKind): string {
+  const raw = input.trim();
+  let url: URL | null = null;
+  try {
+    url = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+  } catch {
+    url = null;
+  }
+  const looksLikeUrl = /[./]/.test(raw) && url !== null;
+  if (looksLikeUrl && url) {
+    const vendor = BOARD_HOSTS.find((b) => b.vendor.test(url!.hostname));
+    if (vendor) {
+      const own = vendor.kind === 'ashby' ? ' For jobs at Ashby itself, use https://jobs.ashbyhq.com/ashby.' : '';
+      return (
+        `That is ${vendor.name}'s own website, not a company's job board. ` +
+        `Each company using ${vendor.name} has a board at ${vendor.board}, for example the address of one of their job postings.${own}`
+      );
+    }
+    return (
+      `${url.hostname} is not a Greenhouse, Lever or Ashby board. On the company's careers page, open a job posting: ` +
+      'if its address starts with job-boards.greenhouse.io, jobs.lever.co or jobs.ashbyhq.com, paste that address here. ' +
+      'Companies using other systems (Workday, Personio, SmartRecruiters, ...) are not supported yet.'
+    );
+  }
+  if (!kind) return `Choose the board type (Greenhouse, Lever or Ashby) for the token "${raw}", or paste the board's full address.`;
+  return 'A board token may only contain letters, numbers, dots, dashes and underscores, for example "gitlab".';
+}
+
 const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
 
 function decodeEntities(s: string): string {

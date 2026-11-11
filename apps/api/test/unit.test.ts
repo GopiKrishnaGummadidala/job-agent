@@ -4,7 +4,7 @@ import { parseAssessment } from '../src/ai/prompts';
 import { draftHash } from '../src/drafts';
 import { hasTerm, scoreJob, tagMatches } from '../src/matching/score';
 import { recommendResume } from '../src/resumes';
-import { htmlToText, parseBoardRef } from '../src/sources/adapters';
+import { boardRefHelp, htmlToText, parseBoardRef } from '../src/sources/adapters';
 
 const prefs = {
   titles: ['Backend Engineer'],
@@ -44,6 +44,16 @@ test('parseBoardRef accepts URLs and tokens', () => {
   assert.deepEqual(parseBoardRef('acme', 'lever'), { kind: 'lever', token: 'acme' });
   assert.equal(parseBoardRef('../etc/passwd', 'lever'), null);
   assert.equal(parseBoardRef('https://evil.example/whatever'), null);
+});
+
+test('boardRefHelp explains vendor homepages, other sites and bare tokens', () => {
+  assert.equal(parseBoardRef('https://www.ashbyhq.com/'), null);
+  assert.match(boardRefHelp('https://www.ashbyhq.com/'), /Ashby's own website.*jobs\.ashbyhq\.com\/<company>.*jobs\.ashbyhq\.com\/ashby/);
+  assert.match(boardRefHelp('greenhouse.com'), /Greenhouse's own website.*job-boards\.greenhouse\.io\/<company>/);
+  assert.match(boardRefHelp('https://www.lever.co/pricing'), /Lever's own website/);
+  assert.match(boardRefHelp('https://careers.example.com/jobs'), /careers\.example\.com is not a Greenhouse, Lever or Ashby board/);
+  assert.match(boardRefHelp('gitlab'), /Choose the board type/);
+  assert.match(boardRefHelp('bad token!', 'lever'), /may only contain/);
 });
 
 test('htmlToText strips markup and scripts', () => {
