@@ -1,4 +1,5 @@
 # Job Agent
+n[![CI](https://github.com/GopiKrishnaGummadidala/job-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/GopiKrishnaGummadidala/job-agent/actions/workflows/ci.yml)
 
 Finds jobs on company job boards, ranks them against your profile, prepares applications, and
 pre-fills employer forms, but **only after you approve each application, and you always click Submit yourself**.
@@ -8,7 +9,7 @@ Plan review and the reasoning behind the cost choices: [docs/PLAN-REVIEW.md](doc
 
 ## Run locally
 
-Requires Node 22+ and Docker Desktop.
+Requires Node 24+ and Docker Desktop.
 
 ```bash
 cp .env.example .env
