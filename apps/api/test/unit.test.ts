@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseAssessment } from '../src/ai/prompts';
 import { draftHash } from '../src/drafts';
-import { hasTerm, scoreJob } from '../src/matching/score';
+import { hasTerm, scoreJob, tagMatches } from '../src/matching/score';
 import { recommendResume } from '../src/resumes';
 import { htmlToText, parseBoardRef } from '../src/sources/adapters';
 
@@ -61,6 +61,27 @@ test('recommendResume picks the resume covering most job skills and lists gaps',
   );
   assert.equal(r.resumeId, 'b');
   assert.deepEqual(r.missing, ['PostgreSQL']);
+});
+
+test('tagMatches understands common spellings', () => {
+  assert.ok(tagMatches('Experience with C# required', '.NET'));
+  assert.ok(tagMatches('We use Node.js', 'node'));
+  assert.ok(tagMatches('Angular 18 frontend', 'Angular'));
+  assert.ok(!tagMatches('React frontend', 'Angular'));
+  assert.ok(tagMatches('Terraform and Azure', 'Azure'), 'unknown tags match as written');
+});
+
+test('recommendResume prefers a CV whose tags the job mentions', () => {
+  const r = recommendResume(
+    [
+      { id: 'node', filename: 'node.pdf', extracted_text: 'C# .NET Node PostgreSQL', tags: ['Node'] },
+      { id: 'dotnet', filename: 'dotnet.pdf', extracted_text: 'C#', tags: ['.NET'] },
+    ],
+    ['C#', '.NET', 'PostgreSQL'],
+    job.description,
+  );
+  assert.equal(r.resumeId, 'dotnet');
+  assert.deepEqual(r.tagHits, ['.NET']);
 });
 
 test('draftHash changes when submitted content changes', () => {

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  Body,
   Controller,
   Delete,
   Get,
@@ -8,6 +9,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Put,
   Res,
   UploadedFile,
   UseGuards,
@@ -16,9 +18,11 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import { createHash } from 'node:crypto';
-import { AuthGuard, UserId } from './auth';
-import { audit, Db } from './db';
-import { hasTerm } from './matching/score';
+import { z } from 'zod';
+import { AuthGuard, parse, UserId } from './auth';
+import { audit, Db, Q } from './db';
+import { MatchingService } from './matching/matching.service';
+import { hasTerm, tagMatches } from './matching/score';
 
 const MAX_BYTES = 5 * 1024 * 1024;
 const PDF = 'application/pdf';
@@ -49,35 +53,93 @@ export async function extractText(buf: Buffer, mime: string): Promise<string> {
 export interface ResumeRecommendation {
   resumeId: string | null;
   filename: string | null;
+  /** Tags of the recommended CV that the job mentions. */
+  tagHits: string[];
+  tags: string[];
   matched: string[];
   /** Skills the job mentions and the user's profile lists, but this resume does not mention. */
   missing: string[];
-  candidates: { id: string; filename: string; matched: number }[];
+  candidates: { id: string; filename: string; tags: string[]; tagHits: string[]; matched: number }[];
 }
 
-/** Picks the existing resume that covers the most job-relevant skills. Never modifies a resume. */
-export function recommendResume(
-  resumes: { id: string; filename: string; extracted_text: string }[],
-  terms: string[],
-  jobText: string,
-): ResumeRecommendation {
+export interface ResumeForMatching {
+  id: string;
+  filename: string;
+  extracted_text: string;
+  tags?: string[];
+}
+
+/**
+ * Picks the existing resume that fits the job best: first by how many of its tags the job
+ * mentions (e.g. a ".NET" CV for a C# role), then by job-relevant skills it covers.
+ * Never modifies a resume.
+ */
+export function recommendResume(resumes: ResumeForMatching[], terms: string[], jobText: string): ResumeRecommendation {
   const relevant = [...new Set(terms.map((t) => t.trim()).filter(Boolean))].filter((t) => hasTerm(jobText, t));
-  const scored = resumes.map((r) => ({ r, matched: relevant.filter((t) => hasTerm(r.extracted_text, t)) }));
-  scored.sort((a, b) => b.matched.length - a.matched.length);
+  const scored = resumes.map((r) => ({
+    r,
+    tagHits: (r.tags ?? []).filter((t) => tagMatches(jobText, t)),
+    matched: relevant.filter((t) => hasTerm(r.extracted_text, t)),
+  }));
+  scored.sort((a, b) => b.tagHits.length - a.tagHits.length || b.matched.length - a.matched.length);
   const best = scored[0];
   return {
     resumeId: best?.r.id ?? null,
     filename: best?.r.filename ?? null,
+    tagHits: best?.tagHits ?? [],
+    tags: best?.r.tags ?? [],
     matched: best?.matched ?? [],
     missing: best ? relevant.filter((t) => !best.matched.includes(t)) : relevant,
-    candidates: scored.map((s) => ({ id: s.r.id, filename: s.r.filename, matched: s.matched.length })),
+    candidates: scored.map((s) => ({
+      id: s.r.id,
+      filename: s.r.filename,
+      tags: s.r.tags ?? [],
+      tagHits: s.tagHits,
+      matched: s.matched.length,
+    })),
   };
+}
+
+/** The user's resumes with tags, for matching. Runs inside Db.asUser, so only that user's rows. */
+export function loadResumes(q: Q) {
+  return q<ResumeForMatching & { sha256: string }>(
+    `select r.id, r.filename, r.sha256, r.extracted_text,
+            coalesce((select array_agg(t.tag order by t.tag) from resume_tags t where t.resume_id = r.id), '{}') as tags
+     from resume_files r order by r.uploaded_at desc`,
+  );
+}
+
+const tagSchema = z.array(z.string().trim().max(30)).max(20);
+
+/**
+ * Replaces a resume's tags. Tags are compared case-insensitively and reuse the spelling already
+ * used on the user's other CVs, so ".net" and ".NET" become one filter option.
+ */
+export async function setResumeTags(q: Q, userId: string, resumeId: string, input: string[]): Promise<string[]> {
+  const existing: string[] = (await q('select distinct tag from resume_tags where resume_id <> $1', [resumeId])).map((r) => r.tag);
+  const byLower = new Map(existing.map((t) => [t.toLowerCase(), t]));
+  const tags = new Map<string, string>();
+  for (const raw of input) {
+    const t = raw.replace(/\s+/g, ' ').trim();
+    if (!t) continue;
+    const key = t.toLowerCase();
+    if (!tags.has(key)) tags.set(key, byLower.get(key) ?? t);
+  }
+  await q('delete from resume_tags where resume_id = $1', [resumeId]);
+  const list = [...tags.values()];
+  if (list.length) {
+    await q('insert into resume_tags (user_id, resume_id, tag) select $1, $2, unnest($3::text[])', [userId, resumeId, list]);
+  }
+  return list.sort();
 }
 
 @Controller('me/resumes')
 @UseGuards(AuthGuard)
 export class ResumesController {
-  constructor(private db: Db) {}
+  constructor(
+    private db: Db,
+    private matching: MatchingService,
+  ) {}
 
   @Get()
   list(@UserId() userId: string) {
@@ -85,16 +147,53 @@ export class ResumesController {
       q(
         `select id, filename, mime_type, size_bytes, sha256, uploaded_at, length(extracted_text) > 0 as has_text,
                 left(extracted_text, 600) as preview,
+                coalesce((select array_agg(t.tag order by t.tag) from resume_tags t where t.resume_id = r.id), '{}') as tags,
                 (select count(*) from application_drafts d where d.resume_id = r.id)::int as used_by
          from resume_files r order by uploaded_at desc`,
       ),
     );
   }
 
-  /** Stores a read-only snapshot. Edits happen in the external Resume Builder; re-upload adds a new version. */
+  /** All tags in use, for the Job Explorer filter. */
+  @Get('tags')
+  tags(@UserId() userId: string) {
+    return this.db.asUser(userId, (q) =>
+      q('select tag, count(*)::int as resumes from resume_tags group by tag order by lower(tag)'),
+    );
+  }
+
+  @Put(':id/tags')
+  async putTags(@UserId() userId: string, @Param('id', ParseUUIDPipe) id: string, @Body() body: unknown) {
+    const { tags } = parse(z.object({ tags: tagSchema }), body);
+    const saved = await this.db.asUser(userId, async (q) => {
+      const [r] = await q('select id from resume_files where id = $1', [id]);
+      if (!r) throw new NotFoundException();
+      const list = await setResumeTags(q, userId, id, tags);
+      await audit(q, userId, 'resume.tagged', id, { tags: list });
+      return list;
+    });
+    await this.matching.recompute(userId);
+    return { id, tags: saved };
+  }
+
+  /**
+   * Stores a read-only snapshot. Edits happen in the external Resume Builder; re-upload adds a new
+   * version. Optional "tags" form field: comma-separated, e.g. ".NET, Angular".
+   */
   @Post()
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_BYTES, files: 1 } }))
-  async upload(@UserId() userId: string, @UploadedFile() file: Express.Multer.File | undefined) {
+  async upload(
+    @UserId() userId: string,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @Body() body: { tags?: string } = {},
+  ) {
+    const tags = parse(tagSchema, String(body?.tags ?? '').split(',').filter((t) => t.trim()));
+    const result = await this.store(userId, file, tags);
+    if (tags.length && !result.duplicate) await this.matching.recompute(userId);
+    return result;
+  }
+
+  private async store(userId: string, file: Express.Multer.File | undefined, tags: string[]) {
     if (!file) throw new BadRequestException('Attach a PDF or DOCX file.');
     const filename = file.originalname.replace(/[^\w.\- ()]/g, '_').slice(0, 150) || 'resume';
     const mime = detectType(file.buffer, filename);
@@ -112,8 +211,9 @@ export class ResumesController {
         const [existing] = await q('select id, filename, sha256, uploaded_at from resume_files where sha256 = $1', [sha256]);
         return { ...existing, duplicate: true };
       }
-      await audit(q, userId, 'resume.imported', row.id, { filename, sha256, extracted: text.length > 0 });
-      return { ...row, duplicate: false, has_text: text.length > 0 };
+      const saved = await setResumeTags(q, userId, row.id, tags);
+      await audit(q, userId, 'resume.imported', row.id, { filename, sha256, extracted: text.length > 0, tags: saved });
+      return { ...row, duplicate: false, has_text: text.length > 0, tags: saved };
     });
   }
 
@@ -137,5 +237,6 @@ export class ResumesController {
       if (!rows.length) throw new NotFoundException();
       await audit(q, userId, 'resume.deleted', id);
     });
+    await this.matching.recompute(userId);
   }
 }

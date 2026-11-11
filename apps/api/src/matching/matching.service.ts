@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Db, Q } from '../db';
-import { scoreJob } from './score';
+import { scoreJob, tagMatches } from './score';
 
 export async function loadProfile(q: Q, userId: string) {
   await q('insert into candidate_profiles (user_id) values ($1) on conflict do nothing', [userId]);
@@ -26,15 +26,20 @@ export class MatchingService {
          from jobs j join job_sources s on s.board_id = j.board_id
          where s.enabled and j.closed_at is null`,
       );
-      const rows = jobs.map((j) => ({ job_id: j.id, ...scoreJob(j, profile, prefs) }));
+      const tags: string[] = (await q('select distinct tag from resume_tags')).map((r) => r.tag);
+      const rows = jobs.map((j) => {
+        const text = `${j.title}\n${j.description}`;
+        return { job_id: j.id, ...scoreJob(j, profile, prefs), tag_hits: tags.filter((t) => tagMatches(text, t)) };
+      });
       await q(
-        `insert into job_matches (user_id, job_id, score, filtered, reasons, unknowns, computed_at)
-         select $1, x.job_id, x.score, x.filtered, x.reasons, x.unknowns, now()
+        `insert into job_matches (user_id, job_id, score, filtered, reasons, unknowns, tag_hits, computed_at)
+         select $1, x.job_id, x.score, x.filtered, x.reasons, x.unknowns,
+                array(select jsonb_array_elements_text(x.tag_hits)), now()
          from jsonb_to_recordset($2::jsonb)
-           as x(job_id uuid, score int, filtered boolean, reasons jsonb, unknowns jsonb)
+           as x(job_id uuid, score int, filtered boolean, reasons jsonb, unknowns jsonb, tag_hits jsonb)
          on conflict (user_id, job_id) do update set
            score = excluded.score, filtered = excluded.filtered, reasons = excluded.reasons,
-           unknowns = excluded.unknowns, computed_at = now()`,
+           unknowns = excluded.unknowns, tag_hits = excluded.tag_hits, computed_at = now()`,
         [userId, JSON.stringify(rows)],
       );
       return rows.length;

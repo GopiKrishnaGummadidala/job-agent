@@ -23,7 +23,7 @@ import { audit, Db, Q } from './db';
 import { hasTerm } from './matching/score';
 import { loadPrefs, loadProfile } from './matching/matching.service';
 import { loadSettings } from './profile';
-import { recommendResume } from './resumes';
+import { loadResumes, recommendResume } from './resumes';
 
 const answer = z.object({ question: z.string().trim().min(1).max(500), answer: z.string().trim().max(5000) });
 const patchSchema = z.object({
@@ -105,7 +105,7 @@ export class DraftsController {
       const profile = await loadProfile(q, userId);
       const prefs = await loadPrefs(q, userId);
       const settings = await loadSettings(q, userId);
-      const resumes = await q('select id, filename, sha256, extracted_text from resume_files');
+      const resumes = await loadResumes(q);
       const terms = [...profile.skills, ...prefs.keywords];
       const rec = recommendResume(resumes, terms, `${job.title}\n${job.description}`);
       const resume = resumes.find((r) => r.id === rec.resumeId) ?? null;

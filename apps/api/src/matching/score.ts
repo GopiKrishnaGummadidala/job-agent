@@ -44,6 +44,31 @@ export function hasTerm(text: string, term: string): boolean {
   return new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(t)}(?![\\p{L}\\p{N}])`, 'iu').test(text);
 }
 
+/** Common spellings, so a ".NET" tag also finds "C#" or "dotnet" and "Node" finds "Node.js". */
+const TAG_ALIASES: Record<string, string[]> = {
+  '.net': ['.net', 'dotnet', 'c#', 'asp.net'],
+  dotnet: ['.net', 'dotnet', 'c#', 'asp.net'],
+  'c#': ['c#', '.net', 'dotnet'],
+  node: ['node', 'node.js', 'nodejs'],
+  'node.js': ['node', 'node.js', 'nodejs'],
+  nodejs: ['node', 'node.js', 'nodejs'],
+  angular: ['angular', 'angularjs'],
+  react: ['react', 'react.js', 'reactjs'],
+  vue: ['vue', 'vue.js', 'vuejs'],
+  javascript: ['javascript', 'js'],
+  typescript: ['typescript', 'ts'],
+  postgres: ['postgres', 'postgresql'],
+  postgresql: ['postgres', 'postgresql'],
+  k8s: ['k8s', 'kubernetes'],
+  kubernetes: ['k8s', 'kubernetes'],
+};
+
+/** True when the text mentions the tag or one of its common spellings. */
+export function tagMatches(text: string, tag: string): boolean {
+  const terms = TAG_ALIASES[tag.trim().toLowerCase()] ?? [tag];
+  return terms.some((t) => hasTerm(text, t));
+}
+
 const clean = (list: string[]) => [...new Set(list.map((s) => s.trim()).filter(Boolean))];
 
 export function scoreJob(job: ScoreJob, profile: ScoreProfile, prefs: ScorePrefs): ScoreResult {

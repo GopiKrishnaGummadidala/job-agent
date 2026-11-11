@@ -2,7 +2,7 @@ import { Alert, Box, Button, Card, CardActions, CardContent, Chip, Typography } 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Download, ExternalLink, Trash2, Upload } from 'lucide-react';
 import { useRef } from 'react';
-import { EmptyState, ErrorAlert, LoadingBlock, PageHeader } from '../../components/ui';
+import { EmptyState, ErrorAlert, LoadingBlock, PageHeader, TagsInput } from '../../components/ui';
 import { api, fmtDateTime } from '../../lib/api';
 
 export function ResumesPage() {
@@ -25,14 +25,36 @@ export function ResumesPage() {
   });
   const remove = useMutation({
     mutationFn: (id: string) => api(`/me/resumes/${id}`, { method: 'DELETE' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['resumes'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['resumes'] });
+      qc.invalidateQueries({ queryKey: ['resume-tags'] });
+      qc.invalidateQueries({ queryKey: ['jobs'] });
+    },
   });
+  const setTags = useMutation({
+    mutationFn: ({ id, tags }: { id: string; tags: string[] }) => api(`/me/resumes/${id}/tags`, { method: 'PUT', json: { tags } }),
+    // Run tag saves one after another, so quick successive edits cannot land out of order.
+    scope: { id: 'resume-tags' },
+    onMutate: ({ id, tags }) => {
+      // Show the change immediately; the server's normalized list replaces it on success.
+      qc.setQueryData(['resumes'], (old: any[] | undefined) => old?.map((r) => (r.id === id ? { ...r, tags } : r)));
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ['resumes'] });
+      qc.invalidateQueries({ queryKey: ['resume-tags'] });
+      qc.invalidateQueries({ queryKey: ['jobs'] });
+      qc.invalidateQueries({ queryKey: ['job'] });
+    },
+  });
+  const allTags: string[] = [...new Set<string>((resumes.data ?? []).flatMap((r: any) => r.tags))].sort((a, b) =>
+    a.localeCompare(b, undefined, { sensitivity: 'base' }),
+  );
 
   return (
     <>
       <PageHeader
         title="Resume Library"
-        subtitle="Read-only copies of your resumes. Job Agent recommends one per job but never edits them."
+        subtitle="Read-only copies of your CVs. Tag each one (e.g. .NET, Node, Angular) to filter jobs by it; the best-matching CV is picked per job."
         actions={
           <>
             {builderUrl && (
@@ -57,7 +79,7 @@ export function ResumesPage() {
           e.target.value = '';
         }}
       />
-      <ErrorAlert error={upload.error ?? remove.error} />
+      <ErrorAlert error={upload.error ?? remove.error ?? setTags.error} />
       {upload.data?.duplicate && <Alert severity="info" className="mb-3">That exact file is already in your library.</Alert>}
       {upload.data && upload.data.has_text === false && (
         <Alert severity="warning" className="mb-3">No text could be read from this file (it may be a scanned image), so it cannot be matched against jobs.</Alert>
@@ -83,7 +105,16 @@ export function ResumesPage() {
                   {r.used_by > 0 && <Chip size="small" label={`Used in ${r.used_by} application${r.used_by > 1 ? 's' : ''}`} />}
                   {!r.has_text && <Chip size="small" color="warning" label="No readable text" />}
                 </Box>
-                <Typography variant="body2" color="text.secondary" className="prewrap mt-2 line-clamp-6">{r.preview}</Typography>
+                <Box className="mt-3">
+                  <TagsInput
+                    label="Tags"
+                    value={r.tags}
+                    options={allTags}
+                    onChange={(tags) => setTags.mutate({ id: r.id, tags })}
+                    helperText="e.g. .NET, Node, Angular. Used to filter jobs and pick this CV."
+                  />
+                </Box>
+                <Typography variant="body2" color="text.secondary" className="prewrap mt-2 line-clamp-4">{r.preview}</Typography>
               </CardContent>
               <CardActions>
                 <Button size="small" startIcon={<Download size={14} />} href={`/api/me/resumes/${r.id}/file`}>Download</Button>

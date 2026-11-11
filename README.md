@@ -30,7 +30,10 @@ npm run dev:web
 Open http://localhost:5173, create an account, then:
 
 1. **Profile & Preferences**: add skills, target roles and locations.
-2. **Resume Library**: upload your existing PDF/DOCX resumes.
+2. **Resume Library**: upload your existing PDF/DOCX CVs and tag each one, e.g. `.NET`, `Node`, `Angular`.
+   In the Job Explorer, the **CV tags** filter shows jobs mentioning any (or all) chosen tags, and
+   each application starts with the CV whose tags the job mentions. Common spellings count too:
+   `.NET` also finds C#, `Node` finds Node.js.
 3. **Sources & Settings**: paste board URLs, e.g. `https://job-boards.greenhouse.io/gitlab`,
    `https://jobs.ashbyhq.com/ramp`, `https://jobs.lever.co/<company>`.
 4. **Job Explorer**: open a job and choose **Prepare application**.

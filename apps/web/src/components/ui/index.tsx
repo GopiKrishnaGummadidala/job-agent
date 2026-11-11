@@ -58,17 +58,23 @@ export function TagsInput({
   value,
   onChange,
   helperText,
+  options = [],
+  disabled,
 }: {
   label: string;
   value: string[];
   onChange: (v: string[]) => void;
   helperText?: string;
+  /** Suggestions; free text is still allowed. */
+  options?: string[];
+  disabled?: boolean;
 }) {
   return (
     <Autocomplete
       multiple
       freeSolo
-      options={[]}
+      disabled={disabled}
+      options={options.filter((o) => !value.some((v) => v.toLowerCase() === o.toLowerCase()))}
       value={value}
       onChange={(_, v) => onChange([...new Set(v.map((s) => s.trim()).filter(Boolean))])}
       renderValue={(vals, getItemProps) =>

@@ -171,7 +171,10 @@ function DraftReview({ id }: { id: string }) {
       >
         <MenuItem value="">None</MenuItem>
         {(resumes.data ?? []).map((r: any) => (
-          <MenuItem key={r.id} value={r.id}>{r.filename} · {fmtDateTime(r.uploaded_at)}</MenuItem>
+          <MenuItem key={r.id} value={r.id}>
+            {r.filename}
+            {r.tags.length > 0 && ` [${r.tags.join(', ')}]`} · {fmtDateTime(r.uploaded_at)}
+          </MenuItem>
         ))}
       </TextField>
 

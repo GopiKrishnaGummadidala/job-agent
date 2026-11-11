@@ -176,6 +176,53 @@ describe('approval workflow', () => {
   });
 });
 
+describe('CV tags', () => {
+  test('tags filter jobs and pick the matching CV; other users cannot tag your CVs', async () => {
+    const a = await h.user();
+    const b = await h.user();
+    const fd = resumeForm(tinyPdf('Ada Example C# ASP.NET Core'), 'dotnet.pdf');
+    fd.append('tags', '.NET, Azure');
+    const dotnet = (await a.call('POST', '/me/resumes', fd)).body;
+    assert.deepEqual(dotnet.tags, ['.NET', 'Azure']);
+    const node = (await a.call('POST', '/me/resumes', resumeForm(tinyPdf('Ada Example Node.js Express'), 'node.pdf'))).body;
+    const tagged = await a.call('PUT', `/me/resumes/${node.id}/tags`, { tags: ['node', ' .net ', 'NODE'] });
+    assert.deepEqual(tagged.body.tags, ['.NET', 'node'], 'deduped case-insensitively, reusing the existing ".NET" spelling');
+    await a.call('PUT', `/me/resumes/${node.id}/tags`, { tags: ['Node'] });
+
+    const { jobId: dotnetJob } = await h.seedJob([a], { title: 'Senior Backend Engineer', description: 'Build services in C# on Azure.' });
+    const { jobId: nodeJob } = await h.seedJob([a], { title: 'Senior Backend Engineer', description: 'Our stack is Node.js and TypeScript.' });
+    await a.call('POST', '/me/sources/sync');
+
+    const ids = async (qs: string) => (await a.call('GET', `/me/jobs?minScore=0&${qs}`)).body.map((j: any) => j.id);
+    assert.deepEqual(await ids('tags=.NET'), [dotnetJob]);
+    assert.deepEqual(await ids('tags=Node'), [nodeJob]);
+    assert.deepEqual((await ids('tags=.NET,Node')).sort(), [dotnetJob, nodeJob].sort());
+    assert.deepEqual(await ids('tags=.NET,Azure&tagMode=all'), [dotnetJob]);
+    assert.deepEqual(await ids('tags=.NET,Node&tagMode=all'), []);
+
+    const detail = (await a.call('GET', `/me/jobs/${nodeJob}`)).body;
+    assert.equal(detail.resume.resumeId, node.id);
+    assert.deepEqual(detail.resume.tagHits, ['Node']);
+    const draft = (await a.call('POST', `/me/jobs/${dotnetJob}/prepare`)).body;
+    assert.equal(draft.resume_id, dotnet.id);
+
+    const tags = (await a.call('GET', '/me/resumes/tags')).body.map((t: any) => t.tag);
+    assert.deepEqual(tags, ['.NET', 'Azure', 'Node']);
+
+    assert.equal((await b.call('PUT', `/me/resumes/${dotnet.id}/tags`, { tags: ['hijack'] })).status, 404);
+    assert.deepEqual((await b.call('GET', '/me/resumes/tags')).body, []);
+    await assert.rejects(
+      h.owner.query(`insert into resume_tags (user_id, resume_id, tag) values ($1, $2, 'x')`, [b.id, dotnet.id]),
+      /foreign key/,
+      'a tag row cannot point at another user’s resume, even bypassing the API',
+    );
+
+    // Tagged CVs stay byte-for-byte unchanged.
+    const [row] = (await h.owner.query('select sha256 from resume_files where id = $1', [dotnet.id])).rows;
+    assert.equal(row.sha256, dotnet.sha256);
+  });
+});
+
 async function loginCookie(u: TestUser): Promise<string> {
   const r = await fetch(`${h.base}/auth/login`, {
     method: 'POST',

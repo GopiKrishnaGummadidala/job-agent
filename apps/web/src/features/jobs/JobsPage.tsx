@@ -1,5 +1,6 @@
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Chip,
@@ -12,6 +13,8 @@ import {
   Paper,
   Slider,
   Switch,
+  ToggleButton,
+  ToggleButtonGroup,
   TextField,
   Tooltip,
   Typography,
@@ -33,12 +36,24 @@ export function JobsPage() {
   const [minScore, setMinScore] = useState(40);
   const [status, setStatus] = useState('all');
   const [showFiltered, setShowFiltered] = useState(false);
+  const [tags, setTags] = useState<string[]>([]);
+  const [tagMode, setTagMode] = useState<'any' | 'all'>('any');
   const selected = params.get('job');
 
+  const tagOptions = useQuery({ queryKey: ['resume-tags'], queryFn: () => api<{ tag: string; resumes: number }[]>('/me/resumes/tags') });
   const jobs = useQuery({
-    queryKey: ['jobs', { q, minScore, status, showFiltered }],
+    queryKey: ['jobs', { q, minScore, status, showFiltered, tags, tagMode }],
     queryFn: () =>
-      api(`/me/jobs?${new URLSearchParams({ q, minScore: String(minScore), status, includeFiltered: String(showFiltered) })}`),
+      api(
+        `/me/jobs?${new URLSearchParams({
+          q,
+          minScore: String(minScore),
+          status,
+          includeFiltered: String(showFiltered),
+          tags: tags.join(','),
+          tagMode,
+        })}`,
+      ),
   });
   const sync = useMutation({
     mutationFn: () => api('/me/sources/sync', { method: 'POST' }),
@@ -60,6 +75,19 @@ export function JobsPage() {
     { field: 'title', headerName: 'Role', flex: 2, minWidth: 220 },
     { field: 'company', headerName: 'Company', flex: 1, minWidth: 120 },
     { field: 'location', headerName: 'Location', flex: 1, minWidth: 140 },
+    {
+      field: 'tag_hits',
+      headerName: 'CV tags',
+      width: 160,
+      sortable: false,
+      renderCell: (p) => (
+        <Box className="flex h-full items-center gap-1 overflow-hidden">
+          {(p.value as string[]).map((t) => (
+            <Chip key={t} size="small" label={t} variant={tags.includes(t) ? 'filled' : 'outlined'} />
+          ))}
+        </Box>
+      ),
+    },
     { field: 'source', headerName: 'Source', width: 100 },
     { field: 'posted_at', headerName: 'Posted', width: 110, valueFormatter: (v) => fmtDate(v) },
     {
@@ -103,12 +131,41 @@ export function JobsPage() {
           <MenuItem value="dismissed">Dismissed</MenuItem>
         </TextField>
         <FormControlLabel control={<Switch checked={showFiltered} onChange={(e) => setShowFiltered(e.target.checked)} />} label="Show filtered out" />
+        <Box className="flex flex-wrap items-center gap-3 md:col-span-4">
+          {tagOptions.data?.length ? (
+            <>
+              <Autocomplete
+                multiple
+                className="min-w-64 flex-1"
+                options={tagOptions.data.map((t) => t.tag)}
+                value={tags}
+                onChange={(_, v) => setTags(v)}
+                renderInput={(p) => <TextField {...p} label="CV tags" placeholder={tags.length ? '' : 'e.g. .NET, Node, Angular'} />}
+              />
+              <ToggleButtonGroup
+                size="small"
+                exclusive
+                value={tagMode}
+                onChange={(_, v) => v && setTagMode(v)}
+                aria-label="How to combine tags"
+                disabled={tags.length < 2}
+              >
+                <ToggleButton value="any">Any tag</ToggleButton>
+                <ToggleButton value="all">All tags</ToggleButton>
+              </ToggleButtonGroup>
+            </>
+          ) : (
+            <Typography variant="body2" color="text.secondary">
+              Tag your CVs (e.g. .NET, Node, Angular) in the <Link component={RouterLink} to="/resumes">Resume Library</Link> to filter jobs by them.
+            </Typography>
+          )}
+        </Box>
       </Paper>
       {jobs.isLoading ? (
         <LoadingBlock rows={8} />
       ) : jobs.error ? (
         <ErrorAlert error={jobs.error} />
-      ) : jobs.data.length === 0 && !q && minScore <= 40 && status === 'all' ? (
+      ) : jobs.data.length === 0 && !q && minScore <= 40 && status === 'all' && !tags.length ? (
         <EmptyState title="No jobs yet" action={<Button component={RouterLink} to="/settings" variant="contained">Add a job board</Button>}>
           Add Greenhouse, Lever or Ashby boards of companies you like. Jobs are fetched from their public job APIs.
         </EmptyState>
@@ -231,8 +288,17 @@ function JobDetail({ id, onClose }: { id: string; onClose: () => void }) {
           {rec.resumeId ? (
             <>
               <Typography variant="body2" className="mt-1">
-                Best existing resume: <b>{rec.filename}</b>{rec.matched.length > 0 && ` — mentions ${rec.matched.join(', ')}`}.
+                Best existing CV: <b>{rec.filename}</b>
+                {rec.tagHits.length > 0 && <> — tagged {rec.tagHits.join(', ')}, which this job asks for</>}
+                {rec.tagHits.length === 0 && rec.matched.length > 0 && ` — mentions ${rec.matched.join(', ')}`}.
               </Typography>
+              {rec.tags.length > 0 && (
+                <Box className="mt-1 flex flex-wrap gap-1">
+                  {rec.tags.map((t: string) => (
+                    <Chip key={t} size="small" label={t} color={rec.tagHits.includes(t) ? 'primary' : 'default'} variant="outlined" />
+                  ))}
+                </Box>
+              )}
               {rec.missing.length > 0 && (
                 <Typography variant="body2" className="mt-1">
                   The posting asks for <b>{rec.missing.join(', ')}</b>, which your profile lists but this resume does not mention.

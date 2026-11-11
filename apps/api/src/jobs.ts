@@ -5,13 +5,20 @@ import { AiService } from './ai/ai.service';
 import { AuthGuard, parse, UserId } from './auth';
 import { audit, Db } from './db';
 import { loadPrefs, loadProfile } from './matching/matching.service';
-import { recommendResume } from './resumes';
+import { loadResumes, recommendResume } from './resumes';
 
 const listQuery = z.object({
   minScore: z.coerce.number().int().min(0).max(100).optional(),
   status: z.enum(['new', 'saved', 'dismissed', 'all']).default('all'),
   q: z.string().trim().max(100).optional(),
   includeFiltered: z.enum(['true', 'false']).default('false'),
+  /** Comma-separated CV tags, e.g. ".NET,Angular". */
+  tags: z
+    .string()
+    .max(600)
+    .optional()
+    .transform((s) => (s ?? '').split(',').map((t) => t.trim()).filter(Boolean).slice(0, 20)),
+  tagMode: z.enum(['any', 'all']).default('any'),
 });
 
 @Controller('me/jobs')
@@ -28,7 +35,7 @@ export class JobsController {
     return this.db.asUser(userId, (q) =>
       q(
         `select j.id, j.company, j.title, j.location, j.remote, j.url, j.posted_at, j.first_seen_at,
-                m.score, m.ai_score, m.filtered, m.status, b.kind as source,
+                m.score, m.ai_score, m.filtered, m.status, m.tag_hits, b.kind as source,
                 d.id as draft_id, d.status as draft_status
          from job_matches m
          join jobs j on j.id = m.job_id
@@ -39,9 +46,12 @@ export class JobsController {
            and ($2 = 'all' and m.status <> 'dismissed' or m.status = $2)
            and ($3::text is null or j.title ilike '%' || $3 || '%' or j.company ilike '%' || $3 || '%')
            and ($4 or not m.filtered)
+           and (cardinality($5::text[]) = 0
+                or ($6 = 'any' and m.tag_hits && $5::text[])
+                or ($6 = 'all' and m.tag_hits @> $5::text[]))
          order by coalesce(m.ai_score, m.score) desc, j.first_seen_at desc
          limit 1000`,
-        [f.minScore ?? null, f.status, f.q || null, f.includeFiltered === 'true'],
+        [f.minScore ?? null, f.status, f.q || null, f.includeFiltered === 'true', f.tags, f.tagMode],
       ),
     );
   }
@@ -61,7 +71,7 @@ export class JobsController {
       if (!job) throw new NotFoundException();
       const profile = await loadProfile(q, userId);
       const prefs = await loadPrefs(q, userId);
-      const resumes = await q('select id, filename, extracted_text from resume_files order by uploaded_at desc');
+      const resumes = await loadResumes(q);
       const settings = await q('select resume_builder_url from user_settings');
       return {
         ...job,
@@ -92,7 +102,7 @@ export class JobsController {
       if (!job) throw new NotFoundException();
       const profile = await loadProfile(q, userId);
       const prefs = await loadPrefs(q, userId);
-      const resumes = await q('select id, filename, extracted_text from resume_files');
+      const resumes = await loadResumes(q);
       const rec = recommendResume(resumes, [...profile.skills, ...prefs.keywords], `${job.title}\n${job.description}`);
       const resumeText = resumes.find((r) => r.id === rec.resumeId)?.extracted_text ?? '';
       return { job, profile, prefs, resumeText };
