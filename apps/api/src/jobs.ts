@@ -6,6 +6,7 @@ import { AuthGuard, parse, UserId } from './auth';
 import { audit, Db } from './db';
 import { loadPrefs, loadProfile } from './matching/matching.service';
 import { loadResumes, recommendResume } from './resumes';
+import { BOARD_KINDS } from './sources/adapters';
 import { EMPLOYMENT_TYPES, SENIORITIES, WORKPLACES } from './sources/classify';
 
 /** A list filter given as "a,b" or as repeated parameters (?x=a&x=b). Repeat to keep commas in values. */
@@ -32,7 +33,7 @@ const listQuery = z.object({
   type: list(z.enum(EMPLOYMENT_TYPES)),
   workplace: list(z.enum(WORKPLACES)),
   seniority: list(z.enum(SENIORITIES)),
-  source: list(z.enum(['greenhouse', 'lever', 'ashby'])),
+  source: list(z.enum(BOARD_KINDS)),
   company: list(z.string().max(200), false),
 });
 

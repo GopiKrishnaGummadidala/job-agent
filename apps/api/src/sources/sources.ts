@@ -20,7 +20,7 @@ import { AuthGuard, parse, UserId } from '../auth';
 import { config } from '../config';
 import { audit, Db } from '../db';
 import { MatchingService } from '../matching/matching.service';
-import { BoardKind, boardRefHelp, fetchBoard, parseBoardRef } from './adapters';
+import { BOARD_KINDS, BoardKind, boardRefHelp, fetchBoard, parseBoardRef } from './adapters';
 
 const MIN_RESYNC_MINUTES = 15;
 
@@ -67,9 +67,27 @@ export class SourcesService implements OnModuleInit, OnModuleDestroy {
       board.last_synced_at && Date.now() - new Date(board.last_synced_at).getTime() < MIN_RESYNC_MINUTES * 60_000;
     if (fresh && !force && !board.last_error) return { jobs: 0, skipped: true };
 
+    // Postings already stored with a description, so boards that charge one request per
+    // description (SmartRecruiters) only fetch new or changed ones.
+    const stored = new Map<string, { posted_at: string | null; description: string; content_hash: string }>(
+      board.kind === 'smartrecruiters'
+        ? (
+            await this.db.query(
+              `select external_id, posted_at, description, content_hash from jobs where board_id = $1 and description <> ''`,
+              [boardId],
+            )
+          ).map((r) => [r.external_id, { ...r, posted_at: r.posted_at ? new Date(r.posted_at).toISOString() : null }])
+        : [],
+    );
     let jobs;
     try {
-      jobs = await fetchBoard(board.kind as BoardKind, board.token);
+      jobs = await fetchBoard(board.kind as BoardKind, board.token, {
+        known: new Map([...stored].map(([id, r]) => [id, r.posted_at])),
+      });
+      jobs = jobs.map(({ keep_description, ...j }) => {
+        const prev = keep_description ? stored.get(j.external_id) : undefined;
+        return prev ? { ...j, description: prev.description, content_hash: prev.content_hash } : j;
+      });
     } catch (e) {
       const message = (e as Error).message;
       await this.db.query('update boards set last_error = $2, last_synced_at = now() where id = $1', [boardId, message]);
@@ -108,7 +126,7 @@ export class SourcesService implements OnModuleInit, OnModuleDestroy {
 }
 
 const addSchema = z.object({
-  kind: z.enum(['greenhouse', 'lever', 'ashby']).optional(),
+  kind: z.enum(BOARD_KINDS).optional(),
   ref: z.string().trim().min(1).max(300),
 });
 

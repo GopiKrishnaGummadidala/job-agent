@@ -55,6 +55,17 @@ export function inferWorkplace(title: string, location: string, description: str
   return 'onsite';
 }
 
+/** Maps a board's experience label to a seniority; generic labels ("experienced") return null. */
+export function seniorityFromLabel(label: unknown): Seniority | null {
+  const s = String(label ?? '').toLowerCase().replace(/[\s_-]+/g, '');
+  if (!s) return null;
+  if (s.includes('student') || s.includes('intern')) return 'intern';
+  if (s.includes('entry') || s.includes('junior') || s.includes('graduate')) return 'junior';
+  if (s.includes('executive') || s.includes('director') || s.includes('manager')) return 'lead';
+  if (s === 'midlevel' || s === 'midseniorlevel' || s === 'associate') return 'mid';
+  return null;
+}
+
 export function inferSeniority(title: string, employment: EmploymentType): Seniority {
   if (employment === 'internship' || employment === 'working_student') return 'intern';
   const t = title.toLowerCase();

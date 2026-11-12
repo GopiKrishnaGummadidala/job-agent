@@ -17,6 +17,7 @@ import { Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { ErrorAlert, LoadingBlock, PageHeader } from '../../components/ui';
 import { api, fmtDateTime } from '../../lib/api';
+import { BOARD_FORMATS, BOARD_LABEL } from '../../lib/boards';
 
 export function SettingsPage() {
   return (
@@ -53,12 +54,15 @@ function SourcesCard() {
     <Paper className="p-4">
       <Typography variant="h6" component="h2">Job boards</Typography>
       <Typography variant="body2" color="text.secondary" className="mb-3">
-        Paste the job board address of a company you want to work for. Supported formats:
-        <code className="mx-1">job-boards.greenhouse.io/&lt;company&gt;</code>,
-        <code className="mx-1">jobs.lever.co/&lt;company&gt;</code> and
-        <code className="mx-1">jobs.ashbyhq.com/&lt;company&gt;</code>
-        (e.g. https://jobs.ashbyhq.com/ashby). A link to any job posting on the board works too. Boards refresh every few hours.
+        Paste the job board address of a company you want to work for, or a link to one of its job postings. Boards refresh every few hours.
       </Typography>
+      <Box component="ul" className="mb-3 grid gap-x-4 gap-y-0.5 pl-0 text-sm sm:grid-cols-2" sx={{ listStyle: 'none', color: 'text.secondary' }}>
+        {BOARD_FORMATS.map(([name, format]) => (
+          <li key={name}>
+            <b>{name}</b> <code>{format}</code>
+          </li>
+        ))}
+      </Box>
       <Box
         component="form"
         className="grid gap-2 sm:grid-cols-[1fr_140px_auto]"
@@ -70,9 +74,9 @@ function SourcesCard() {
         <TextField label="Board URL or token" value={ref} onChange={(e) => setRef(e.target.value)} required />
         <TextField select label="Type" value={kind} onChange={(e) => setKind(e.target.value)}>
           <MenuItem value="auto">From URL</MenuItem>
-          <MenuItem value="greenhouse">Greenhouse</MenuItem>
-          <MenuItem value="lever">Lever</MenuItem>
-          <MenuItem value="ashby">Ashby</MenuItem>
+          {Object.entries(BOARD_LABEL).map(([value, label]) => (
+            <MenuItem key={value} value={value}>{label}</MenuItem>
+          ))}
         </TextField>
         <Button type="submit" variant="contained" disabled={add.isPending}>{add.isPending ? 'Checking…' : 'Add'}</Button>
       </Box>
@@ -95,7 +99,7 @@ function SourcesCard() {
               <ListItemText
                 primary={
                   <>
-                    {s.company_name || s.token} <Chip size="small" label={s.kind} variant="outlined" className="ml-1" />
+                    {s.company_name || s.token} <Chip size="small" label={BOARD_LABEL[s.kind] ?? s.kind} variant="outlined" className="ml-1" />
                   </>
                 }
                 secondary={s.last_error ? `Error: ${s.last_error}` : `${s.open_jobs} open jobs · refreshed ${fmtDateTime(s.last_synced_at)}`}
@@ -105,7 +109,8 @@ function SourcesCard() {
         </List>
       )}
       <Typography variant="caption" color="text.secondary" component="p" className="mt-2">
-        LinkedIn, Indeed, StepStone and XING forbid automated access, so they are not connected. Use their e-mail alerts and apply via the company's own board.
+        LinkedIn, Indeed, StepStone and XING forbid automated access, and Workday has no public job feed, so they are not connected.
+        Use their e-mail alerts and add the company's own board here when it uses one of the systems above.
       </Typography>
     </Paper>
   );

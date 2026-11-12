@@ -28,6 +28,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router-dom';
 import { EmptyState, ErrorAlert, LoadingBlock, PageHeader } from '../../components/ui';
 import { api } from '../../lib/api';
+import { BOARD_LABEL } from '../../lib/boards';
 import { statusColor, statusLabel } from '../../styles/theme';
 
 const POSTED = [
@@ -56,7 +57,7 @@ const SENIORITY_LABEL: Record<string, string> = {
   staff: 'Staff / principal',
   lead: 'Lead / manager',
 };
-const SOURCE_LABEL: Record<string, string> = { greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby' };
+const SOURCE_LABEL = BOARD_LABEL;
 
 /** URL keys for list filters; each value is a repeated search parameter. */
 const LIST_KEYS = ['type', 'workplace', 'seniority', 'source', 'company', 'tags'] as const;

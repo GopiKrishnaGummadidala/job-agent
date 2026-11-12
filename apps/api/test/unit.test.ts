@@ -4,7 +4,7 @@ import { parseAssessment } from '../src/ai/prompts';
 import { draftHash } from '../src/drafts';
 import { hasTerm, scoreJob, tagMatches } from '../src/matching/score';
 import { recommendResume } from '../src/resumes';
-import { boardRefHelp, htmlToText, parseBoardRef } from '../src/sources/adapters';
+import { boardRefHelp, htmlToText, parseBoardRef, parsePersonioXml } from '../src/sources/adapters';
 
 const prefs = {
   titles: ['Backend Engineer'],
@@ -51,9 +51,62 @@ test('boardRefHelp explains vendor homepages, other sites and bare tokens', () =
   assert.match(boardRefHelp('https://www.ashbyhq.com/'), /Ashby's own website.*jobs\.ashbyhq\.com\/<company>.*jobs\.ashbyhq\.com\/ashby/);
   assert.match(boardRefHelp('greenhouse.com'), /Greenhouse's own website.*job-boards\.greenhouse\.io\/<company>/);
   assert.match(boardRefHelp('https://www.lever.co/pricing'), /Lever's own website/);
-  assert.match(boardRefHelp('https://careers.example.com/jobs'), /careers\.example\.com is not a Greenhouse, Lever or Ashby board/);
+  assert.match(boardRefHelp('https://careers.example.com/jobs'), /careers.example.com is not a supported job board.*Personio.*Workday/);
   assert.match(boardRefHelp('gitlab'), /Choose the board type/);
   assert.match(boardRefHelp('bad token!', 'lever'), /may only contain/);
+});
+
+test('parseBoardRef recognises Personio, Recruitee, Workable and SmartRecruiters addresses', () => {
+  assert.deepEqual(parseBoardRef('https://1komma5grad.jobs.personio.de/job/2800938?language=en'), { kind: 'personio', token: '1komma5grad' });
+  assert.deepEqual(parseBoardRef('acme.jobs.personio.com'), { kind: 'personio', token: 'acme' });
+  assert.deepEqual(parseBoardRef('https://bunq.recruitee.com/o/some-job'), { kind: 'recruitee', token: 'bunq' });
+  assert.deepEqual(parseBoardRef('https://apply.workable.com/huggingface/'), { kind: 'workable', token: 'huggingface' });
+  assert.equal(parseBoardRef('https://apply.workable.com/j/81B46579FE'), null, 'a Workable /j/ link has no company name');
+  assert.deepEqual(parseBoardRef('https://jobs.smartrecruiters.com/BoschGroup/7440001'), { kind: 'smartrecruiters', token: 'BoschGroup' });
+  assert.equal(parseBoardRef('https://www.recruitee.com/'), null);
+  assert.match(boardRefHelp('https://www.personio.de/'), /Personio's own website.*<company>\.jobs\.personio\.de/);
+  assert.deepEqual(parseBoardRef('acme', 'smartrecruiters'), { kind: 'smartrecruiters', token: 'acme' });
+});
+
+test('parsePersonioXml reads positions, offices, descriptions and labels', () => {
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<workzag-jobs>
+<position>
+  <id>42</id>
+  <office>Hamburg</office>
+  <additionalOffices><office>Berlin (Remote)</office><office>Hamburg</office></additionalOffices>
+  <name>Backend Developer .NET (m/w/d) &amp; Cloud</name>
+  <jobDescriptions>
+    <jobDescription><name>Your tasks</name><value><![CDATA[<p>Build <b>C#</b> services</p>]]></value></jobDescription>
+  </jobDescriptions>
+  <employmentType>permanent</employmentType>
+  <seniority>entry-level</seniority>
+  <schedule>part-time</schedule>
+  <keywords>dotnet,azure</keywords>
+  <createdAt>2026-11-01T08:00:00+00:00</createdAt>
+</position>
+<position>
+  <id>43</id>
+  <office>Munich</office>
+  <name>Werkstudent Data (m/w/d)</name>
+  <jobDescriptions></jobDescriptions>
+  <employmentType>working_student</employmentType>
+  <seniority>student</seniority>
+  <schedule>part-time</schedule>
+</position>
+</workzag-jobs>`;
+  const [a, b] = parsePersonioXml(xml, 'acme-gmbh');
+  assert.equal(a.title, 'Backend Developer .NET (m/w/d) & Cloud');
+  assert.equal(a.company, 'Acme Gmbh');
+  assert.equal(a.location, 'Hamburg, Berlin (Remote)');
+  assert.equal(a.employment_type, 'part_time');
+  assert.equal(a.seniority, 'junior');
+  assert.match(a.description, /Your tasks\nBuild C# services/);
+  assert.match(a.description, /Keywords: dotnet,azure/);
+  assert.equal(a.url, 'https://acme-gmbh.jobs.personio.de/job/42?language=en');
+  assert.equal(a.posted_at, '2026-11-01T08:00:00.000Z');
+  assert.equal(b.employment_type, 'working_student');
+  assert.equal(b.seniority, 'intern');
 });
 
 test('htmlToText strips markup and scripts', () => {

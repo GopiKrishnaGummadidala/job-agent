@@ -5,6 +5,7 @@ import {
   inferEmployment,
   inferSeniority,
   inferWorkplace,
+  seniorityFromLabel,
   workplaceFromLabel,
 } from '../src/sources/classify';
 
@@ -46,4 +47,13 @@ test('seniority comes from the title', () => {
   assert.equal(inferSeniority('Junior Developer', 'full_time'), 'junior');
   assert.equal(inferSeniority('Backend Engineer', 'full_time'), 'mid');
   assert.equal(inferSeniority('Engineering Intern', 'internship'), 'intern');
+});
+
+test('board experience labels map to seniority', () => {
+  assert.equal(seniorityFromLabel('entry-level'), 'junior');
+  assert.equal(seniorityFromLabel('student_college'), 'intern');
+  assert.equal(seniorityFromLabel('Mid-Senior level'), 'mid');
+  assert.equal(seniorityFromLabel('executive'), 'lead');
+  assert.equal(seniorityFromLabel('experienced'), null, 'too generic; the title decides');
+  assert.equal(seniorityFromLabel(undefined), null);
 });

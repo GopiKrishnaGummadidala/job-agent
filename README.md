@@ -36,8 +36,22 @@ Open http://localhost:5173, create an account, then:
    In the Job Explorer, the **CV tags** filter shows jobs mentioning any (or all) chosen tags, and
    each application starts with the CV whose tags the job mentions. Common spellings count too:
    `.NET` also finds C#, `Node` finds Node.js.
-3. **Sources & Settings**: paste board URLs, e.g. `https://job-boards.greenhouse.io/gitlab`,
-   `https://jobs.ashbyhq.com/ramp`, `https://jobs.lever.co/<company>`.
+3. **Sources & Settings**: paste the job board address (or any job link) of companies you like.
+   Supported, via each system's public job feed:
+
+   | System | Address | Example |
+   | --- | --- | --- |
+   | Greenhouse | `job-boards.greenhouse.io/<company>` | `https://job-boards.greenhouse.io/gitlab` |
+   | Lever | `jobs.lever.co/<company>` | |
+   | Ashby | `jobs.ashbyhq.com/<company>` | `https://jobs.ashbyhq.com/ramp` |
+   | Personio | `<company>.jobs.personio.de` | `https://1komma5grad.jobs.personio.de` |
+   | Recruitee | `<company>.recruitee.com` | `https://bunq.recruitee.com` |
+   | Workable | `apply.workable.com/<company>` | `https://apply.workable.com/huggingface` |
+   | SmartRecruiters | `jobs.smartrecruiters.com/<company>` | `https://jobs.smartrecruiters.com/BoschGroup` |
+
+   SmartRecruiters needs one request per job description, so large employers load the newest
+   1,000 postings and fill in descriptions 150 at a time on each refresh. LinkedIn, Indeed,
+   StepStone and XING forbid automated access, and Workday has no public feed, so they are not supported.
 4. **Job Explorer**: filter by date posted (24 hours to a month), employment type, workplace
    (remote/hybrid/on-site), seniority, source, company and CV tags. Filters are kept in the page
    address, so you can bookmark a search. Employment type and workplace come from Lever and Ashby
@@ -78,7 +92,7 @@ and form pre-fill on Greenhouse/Lever/Ashby-style forms without submitting.
 ```
 apps/api   NestJS + PostgreSQL (row-level security), no Redis
   migrations/001_init.sql   schema, RLS policies, role grants
-  src/sources               Greenhouse / Lever / Ashby adapters + scheduler
+  src/sources               job board adapters (7 systems), classification, scheduler
   src/matching              free rule-based scoring with explanations
   src/ai                    provider abstraction (Ollama / OpenAI-compatible / Claude), prompts, budget
   src/drafts.ts             prepare → approve → assist/hand-off → submitted
