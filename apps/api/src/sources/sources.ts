@@ -21,6 +21,7 @@ import { config } from '../config';
 import { audit, Db } from '../db';
 import { MatchingService } from '../matching/matching.service';
 import { BOARD_KINDS, BoardKind, boardRefHelp, fetchBoard, parseBoardRef } from './adapters';
+import { boardHomeCountry, jobCountries } from './countries';
 
 const MIN_RESYNC_MINUTES = 15;
 
@@ -36,6 +37,7 @@ export class SourcesService implements OnModuleInit, OnModuleDestroy {
 
   onModuleInit() {
     if (!config.scheduler) return;
+    void this.backfillCountries();
     // The database is the queue: boards_due() returns stale boards that still have subscribers.
     this.timer = setInterval(() => void this.refreshDue(), 30 * 60_000);
     this.timer.unref();
@@ -57,6 +59,38 @@ export class SourcesService implements OnModuleInit, OnModuleDestroy {
     } catch (e) {
       this.log.error(`Scheduled refresh failed: ${(e as Error).message}`);
     }
+  }
+
+  /** Computes countries for boards stored before countries existed, then re-scores their subscribers. */
+  async backfillCountries() {
+    try {
+      const boards = await this.db.query('select distinct board_id from jobs where countries is null');
+      for (const b of boards) {
+        await this.assignCountries(b.board_id);
+        for (const s of await this.db.query('select board_subscribers($1) as user_id', [b.board_id])) {
+          await this.matching.recompute(s.user_id);
+        }
+      }
+      if (boards.length) this.log.log(`Assigned countries to jobs on ${boards.length} board(s).`);
+    } catch (e) {
+      this.log.error(`Country backfill failed: ${(e as Error).message}`);
+    }
+  }
+
+  /**
+   * Stores each job's countries. Postings that name only a small town or just "Remote" get the
+   * board's home country when nearly all of its other jobs are in one country.
+   */
+  async assignCountries(boardId: string) {
+    const jobs = await this.db.query('select id, location, title from jobs where board_id = $1', [boardId]);
+    const inferred = jobs.map((j) => jobCountries(j.location, j.title));
+    const home = boardHomeCountry(inferred);
+    const rows = jobs.map((j, i) => ({ id: j.id, countries: inferred[i].length || !home ? inferred[i] : [home] }));
+    await this.db.query(
+      `update jobs set countries = array(select jsonb_array_elements_text(x.countries))
+       from jsonb_to_recordset($1::jsonb) as x(id uuid, countries jsonb) where jobs.id = x.id`,
+      [JSON.stringify(rows)],
+    );
   }
 
   /** Fetches one board and upserts its jobs. Shared by all users subscribed to that board. */
@@ -116,6 +150,7 @@ export class SourcesService implements OnModuleInit, OnModuleDestroy {
        where board_id = $1 and closed_at is null and id not in (select id from up)`,
       [boardId, JSON.stringify(unique)],
     );
+    await this.assignCountries(boardId);
     const company = unique[0]?.company ?? board.company_name;
     await this.db.query(
       'update boards set last_synced_at = now(), last_error = null, company_name = $2 where id = $1',

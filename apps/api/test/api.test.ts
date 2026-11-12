@@ -280,6 +280,32 @@ describe('job search filters', () => {
     assert.deepEqual(f.workplace.map((x: any) => x.value).sort(), ['hybrid', 'onsite', 'remote']);
   });
 
+  test('country and city filters, and a Germany preference', async () => {
+    const a = await h.user();
+    await a.call('PUT', '/me/preferences', {
+      titles: ['Engineer'], keywords: [], locations: ['Germany'], remote_ok: true, salary_floor: null,
+      excluded_companies: [], excluded_keywords: [], min_score: 0,
+    });
+    const { jobId: stuttgart } = await h.seedJob([a], { workplace: 'onsite', location: 'Stuttgart, BW, Germany' });
+    const { jobId: hamburg } = await h.seedJob([a], { workplace: 'hybrid', location: 'Hamburg' });
+    const { jobId: euRemote } = await h.seedJob([a], { location: 'Remote - European Union' });
+    const { jobId: usRemote } = await h.seedJob([a], { location: 'Remote - US' });
+    const { jobId: amsterdam } = await h.seedJob([a], { workplace: 'onsite', location: 'Amsterdam, Netherlands' });
+    await a.call('POST', '/me/sources/sync');
+
+    const ids = async (qs: string) => (await a.call('GET', `/me/jobs?minScore=0&${qs}`)).body.map((j: any) => j.id).sort();
+    const sorted = (...x: string[]) => x.sort();
+    assert.deepEqual(await ids(''), sorted(stuttgart, hamburg, euRemote), 'US-only remote and Amsterdam are outside Germany');
+    assert.deepEqual(await ids('includeFiltered=true&country=DE'), sorted(stuttgart, hamburg, euRemote), 'Germany includes Europe-wide jobs');
+    assert.deepEqual(await ids('includeFiltered=true&country=US'), [usRemote]);
+    assert.deepEqual(await ids('includeFiltered=true&country=NL,US'), sorted(amsterdam, usRemote, euRemote));
+    assert.deepEqual(await ids('location=hamburg'), [hamburg]);
+    assert.equal((await a.call('GET', '/me/jobs?country=Germany')).status, 400);
+
+    const f = (await a.call('GET', '/me/jobs/facets?minScore=0')).body;
+    assert.deepEqual(f.country.map((c: any) => c.value).sort(), ['DE', 'EU']);
+  });
+
   test('facets explain an empty result for a new account', async () => {
     const a = await h.user();
     let f = (await a.call('GET', '/me/jobs/facets')).body;

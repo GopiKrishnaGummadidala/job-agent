@@ -34,7 +34,21 @@ test('scoreJob filters exclusions and wrong locations', () => {
   assert.equal(scoreJob({ ...job, company: 'BadCorp GmbH' }, { skills: [] }, prefs).filtered, true);
   assert.equal(scoreJob({ ...job, title: 'Backend Engineer Intern' }, { skills: [] }, prefs).filtered, true);
   assert.equal(scoreJob({ ...job, location: 'Tokyo' }, { skills: [] }, prefs).filtered, true);
-  assert.equal(scoreJob({ ...job, location: 'Tokyo', remote: true }, { skills: [] }, prefs).filtered, false);
+  assert.equal(scoreJob({ ...job, location: 'Remote', remote: true }, { skills: [] }, prefs).filtered, false);
+});
+
+test('a country preference covers its cities and Europe-wide remote jobs, not remote jobs elsewhere', () => {
+  const de = { ...prefs, locations: ['Germany'] };
+  const score = (location: string, remote = false) => scoreJob({ ...job, location, remote }, { skills: [] }, de);
+  assert.match(score('Göttingen').reasons[0].detail, /In Germany/);
+  assert.equal(score('Stuttgart, BW, Germany').filtered, false);
+  assert.match(score('Remote - European Union', true).reasons[0].detail, /Remote, open to Germany/);
+  assert.equal(score('Remote, Germany', true).filtered, false);
+  assert.equal(score('Remote', true).filtered, false, 'remote without a stated country is kept');
+  assert.equal(score('Remote - US', true).filtered, true);
+  assert.equal(score('Remote, Canada; Remote, United States', true).filtered, true);
+  assert.equal(score('Amsterdam, Netherlands').filtered, true);
+  assert.equal(scoreJob({ ...job, location: 'Remote', remote: true, countries: ['DE'] }, { skills: [] }, de).filtered, false);
 });
 
 test('parseBoardRef accepts URLs and tokens', () => {

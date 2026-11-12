@@ -1,4 +1,5 @@
 /** Stage 1 matching: deterministic, explainable, and free. No model is called here. */
+import { countriesOfName, coversCountry, inferCountries, jobCountries as inferJobCountries } from '../sources/countries';
 
 export interface ScoreJob {
   company: string;
@@ -6,6 +7,8 @@ export interface ScoreJob {
   location: string;
   remote: boolean;
   description: string;
+  /** Stored countries; inferred from location when not computed yet. */
+  countries?: string[] | null;
 }
 
 export interface ScoreProfile {
@@ -86,13 +89,23 @@ export function scoreJob(job: ScoreJob, profile: ScoreProfile, prefs: ScorePrefs
   const blockedWord = clean(prefs.excluded_keywords).find((k) => hasTerm(job.title, k));
   if (blockedWord) return reject(`Title contains excluded keyword "${blockedWord}".`);
 
-  // Location (20)
+  // Location (20). A country preference ("Germany") also covers its cities and Europe-wide postings;
+  // remote roles count only when they are open to where you live.
   const locations = clean(prefs.locations);
+  const jobCountries = job.countries ?? inferJobCountries(job.location, job.title);
   const place = locations.find((l) => job.location.toLowerCase().includes(l.toLowerCase()));
+  const country = place ? undefined : locations.find((l) => countriesOfName(l).some((c) => coversCountry(jobCountries, c)));
+  const home = [...new Set(locations.flatMap((l) => (countriesOfName(l).length ? countriesOfName(l) : inferCountries(l))))];
+  const remoteOpen = !jobCountries.length || !home.length || home.some((c) => coversCountry(jobCountries, c));
   if (place) {
     reasons.push({ label: 'Location', points: 20, max: 20, detail: `Located in ${place}.` });
-  } else if (job.remote && prefs.remote_ok) {
+  } else if (country) {
+    const detail = job.remote ? `Remote, open to ${country}.` : `In ${country} (${job.location}).`;
+    reasons.push({ label: 'Location', points: 20, max: 20, detail });
+  } else if (job.remote && prefs.remote_ok && remoteOpen) {
     reasons.push({ label: 'Location', points: 20, max: 20, detail: 'Remote role, and you accept remote work.' });
+  } else if (job.remote && prefs.remote_ok) {
+    return reject(`Remote, but only for ${jobCountries.join(', ')}, outside your preferred locations.`);
   } else if (!locations.length) {
     reasons.push({ label: 'Location', points: 10, max: 20, detail: 'No preferred locations set.' });
     unknowns.push('Add preferred locations to rank by location.');

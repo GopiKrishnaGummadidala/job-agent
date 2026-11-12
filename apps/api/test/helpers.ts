@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
 import { createApp } from '../src/app';
 import { config } from '../src/config';
+import { inferCountries } from '../src/sources/countries';
 
 process.env.SCHEDULER = 'off';
 // The suite registers many accounts from one IP; production keeps the default limit.
@@ -89,9 +90,9 @@ export class Harness {
     const [job] = (
       await this.owner.query(
         `insert into jobs (board_id, external_id, company, title, location, remote, url, apply_url, description, content_hash,
-                           employment_type, workplace, seniority, posted_at)
+                           employment_type, workplace, seniority, posted_at, countries)
          values ($1, '1', $5, $2, $3, $7 = 'remote', 'https://example.test/job/1', 'https://example.test/job/1/apply', $4, 'h1',
-                 $6, $7, $8, now() - make_interval(days => $9))
+                 $6, $7, $8, now() - make_interval(days => $9), $10)
          returning id`,
         [
           board.id,
@@ -103,6 +104,7 @@ export class Harness {
           over.workplace ?? 'remote',
           over.seniority ?? 'senior',
           over.posted_days_ago ?? 0,
+          inferCountries(over.location ?? 'Remote'),
         ],
       )
     ).rows;

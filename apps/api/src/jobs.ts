@@ -8,6 +8,7 @@ import { loadPrefs, loadProfile } from './matching/matching.service';
 import { loadResumes, recommendResume } from './resumes';
 import { BOARD_KINDS } from './sources/adapters';
 import { EMPLOYMENT_TYPES, SENIORITIES, WORKPLACES } from './sources/classify';
+import { EUROPE, EUROPE_WIDE } from './sources/countries';
 
 /** A list filter given as "a,b" or as repeated parameters (?x=a&x=b). Repeat to keep commas in values. */
 const list = (item: z.ZodType<string>, split = true) =>
@@ -35,7 +36,13 @@ const listQuery = z.object({
   seniority: list(z.enum(SENIORITIES)),
   source: list(z.enum(BOARD_KINDS)),
   company: list(z.string().max(200), false),
+  /** ISO country codes; a country also matches Europe-wide postings when it is in Europe. */
+  country: list(z.string().regex(/^[A-Z]{2}$/)),
+  /** City or region text, matched against the posting's location. */
+  location: z.string().trim().max(100).optional(),
 });
+
+const escapeLike = (s?: string) => (s ? `%${s.replace(/[\\%_]/g, (c) => `\\${c}`)}%` : null);
 
 @Controller('me/jobs')
 @UseGuards(AuthGuard)
@@ -48,7 +55,7 @@ export class JobsController {
   @Get()
   list(@UserId() userId: string, @Query() query: unknown) {
     const f = parse(listQuery, query);
-    const like = f.q ? `%${f.q.replace(/[\\%_]/g, (c) => `\\${c}`)}%` : null;
+    const like = escapeLike(f.q);
     return this.db.asUser(userId, (q) =>
       q(
         `select j.id, j.company, j.title, j.location, j.remote, j.workplace, j.employment_type, j.seniority,
@@ -73,6 +80,9 @@ export class JobsController {
            and (cardinality($10::text[]) = 0 or j.seniority = any($10))
            and (cardinality($11::text[]) = 0 or b.kind = any($11))
            and (cardinality($12::text[]) = 0 or j.company = any($12))
+           and (cardinality($13::text[]) = 0 or j.countries && $13::text[]
+                or ('${EUROPE_WIDE}' = any(j.countries) and $13::text[] && $14::text[]))
+           and ($15::text is null or j.location ilike $15)
          order by coalesce(m.ai_score, m.score) desc, coalesce(j.posted_at, j.first_seen_at) desc
          limit 1000`,
         [
@@ -88,6 +98,9 @@ export class JobsController {
           f.seniority,
           f.source,
           f.company,
+          f.country,
+          EUROPE,
+          escapeLike(f.location),
         ],
       ),
     );
@@ -123,6 +136,11 @@ export class JobsController {
         seniority: await count('j.seniority'),
         source: await count('b.kind'),
         company: await count('j.company'),
+        country: await q(
+          `select c as value, count(*)::int as n
+           from job_matches m join jobs j on j.id = m.job_id cross join lateral unnest(j.countries) as c
+           where j.closed_at is null and not m.filtered group by 1 order by 2 desc, 1`,
+        ),
       };
     });
   }

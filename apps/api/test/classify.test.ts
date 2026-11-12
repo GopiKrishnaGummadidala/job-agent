@@ -8,6 +8,7 @@ import {
   seniorityFromLabel,
   workplaceFromLabel,
 } from '../src/sources/classify';
+import { boardHomeCountry, countriesOfName, coversCountry, inferCountries, jobCountries } from '../src/sources/countries';
 
 test('board employment labels map to types', () => {
   assert.equal(employmentFromLabel('Full-time'), 'full_time');
@@ -47,6 +48,38 @@ test('seniority comes from the title', () => {
   assert.equal(inferSeniority('Junior Developer', 'full_time'), 'junior');
   assert.equal(inferSeniority('Backend Engineer', 'full_time'), 'mid');
   assert.equal(inferSeniority('Engineering Intern', 'internship'), 'intern');
+});
+
+test('countries come from country names, cities, codes and US states', () => {
+  assert.deepEqual(inferCountries('Stuttgart, BW, Germany'), ['DE']);
+  assert.deepEqual(inferCountries('Remote, Hamburg, Berlin, München'), ['DE']);
+  assert.deepEqual(inferCountries('Göttingen'), ['DE']);
+  assert.deepEqual(inferCountries('Remote - US'), ['US']);
+  assert.deepEqual(inferCountries('Remote (US)'), ['US']);
+  assert.deepEqual(inferCountries('New York, NY (HQ)'), ['US']);
+  assert.deepEqual(inferCountries('Wilmington, DE'), ['US'], 'DE after a comma is Delaware');
+  assert.deepEqual(inferCountries('London, UK'), ['GB']);
+  assert.deepEqual(inferCountries('Remote, Canada; Remote, United States'), ['CA', 'US']);
+  assert.deepEqual(inferCountries('Remote - European Union'), ['EU']);
+  assert.deepEqual(inferCountries('bengaluru, , India'), ['IN']);
+  assert.deepEqual(inferCountries('Remote'), []);
+  assert.deepEqual(inferCountries('Breidenbach'), []);
+  assert.deepEqual(inferCountries('Remote, KSA'), ['SA']);
+  assert.deepEqual(jobCountries('Remote', 'Site Reliability Engineer, Infrastructure — US'), ['US']);
+  assert.deepEqual(jobCountries('Remote', 'Software Engineer - Edge & Cloud (m/f/d)'), []);
+  assert.deepEqual(jobCountries('Berlin', 'Engineer - US'), ['DE'], 'the location wins over the title');
+});
+
+test('country preferences and board home countries', () => {
+  assert.deepEqual(countriesOfName('Germany'), ['DE']);
+  assert.deepEqual(countriesOfName('dach'), ['DE', 'AT', 'CH']);
+  assert.deepEqual(countriesOfName('Hamburg'), [], 'a city is not a country preference');
+  assert.ok(countriesOfName('Europe').includes('DE'));
+  assert.ok(coversCountry(['EU'], 'DE'));
+  assert.ok(!coversCountry(['EU'], 'US'));
+  assert.equal(boardHomeCountry([['DE'], ['DE'], ['DE'], [], ['DE']]), 'DE');
+  assert.equal(boardHomeCountry([['DE'], ['US'], ['IN'], ['DE']]), null);
+  assert.equal(boardHomeCountry([['DE'], []]), null, 'too few located jobs');
 });
 
 test('board experience labels map to seniority', () => {

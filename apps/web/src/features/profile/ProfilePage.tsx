@@ -81,8 +81,8 @@ export function ProfilePage() {
           <Box className="flex flex-col gap-3">
             <TagsInput label="Target roles" value={prefs.titles} onChange={(v) => setPrefs({ ...prefs, titles: v })} helperText="e.g. Backend Engineer, .NET Developer" />
             <TagsInput label="Extra keywords" value={prefs.keywords} onChange={(v) => setPrefs({ ...prefs, keywords: v })} helperText="Technologies to look for beyond your skills" />
-            <TagsInput label="Preferred locations" value={prefs.locations} onChange={(v) => setPrefs({ ...prefs, locations: v })} helperText="City or country names, e.g. Hamburg, Germany" />
-            <FormControlLabel control={<Switch checked={prefs.remote_ok} onChange={(e) => setPrefs({ ...prefs, remote_ok: e.target.checked })} />} label="Remote roles are fine" />
+            <TagsInput label="Preferred locations" value={prefs.locations} onChange={(v) => setPrefs({ ...prefs, locations: v })} helperText="City or country names, e.g. Hamburg or Germany. A country includes all its cities and Europe-wide remote jobs." />
+            <FormControlLabel control={<Switch checked={prefs.remote_ok} onChange={(e) => setPrefs({ ...prefs, remote_ok: e.target.checked })} />} label="Remote roles are fine (only those open to your preferred countries)" />
             <TagsInput label="Excluded companies" value={prefs.excluded_companies} onChange={(v) => setPrefs({ ...prefs, excluded_companies: v })} />
             <TagsInput label="Excluded title keywords" value={prefs.excluded_keywords} onChange={(v) => setPrefs({ ...prefs, excluded_keywords: v })} helperText="e.g. Intern, Principal, Sales" />
             <Box className="grid gap-3 sm:grid-cols-2">

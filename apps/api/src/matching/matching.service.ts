@@ -22,7 +22,7 @@ export class MatchingService {
       const profile = await loadProfile(q, userId);
       const prefs = await loadPrefs(q, userId);
       const jobs = await q(
-        `select j.id, j.company, j.title, j.location, j.remote, j.description
+        `select j.id, j.company, j.title, j.location, j.remote, j.description, j.countries
          from jobs j join job_sources s on s.board_id = j.board_id
          where s.enabled and j.closed_at is null`,
       );

@@ -60,8 +60,19 @@ const SENIORITY_LABEL: Record<string, string> = {
 const SOURCE_LABEL = BOARD_LABEL;
 
 /** URL keys for list filters; each value is a repeated search parameter. */
-const LIST_KEYS = ['type', 'workplace', 'seniority', 'source', 'company', 'tags'] as const;
-const FILTER_KEYS = ['q', 'posted', 'min', 'status', 'hidden', 'tagMode', ...LIST_KEYS];
+const LIST_KEYS = ['country', 'type', 'workplace', 'seniority', 'source', 'company', 'tags'] as const;
+const FILTER_KEYS = ['q', 'loc', 'posted', 'min', 'status', 'hidden', 'tagMode', ...LIST_KEYS];
+
+const regionNames = new Intl.DisplayNames(['en'], { type: 'region' });
+/** "DE" → "Germany"; "EU" is a Europe-wide posting. */
+export function countryName(code: string) {
+  if (code === 'EU') return 'Europe-wide';
+  try {
+    return regionNames.of(code) ?? code;
+  } catch {
+    return code;
+  }
+}
 
 interface Facet {
   value: string;
@@ -159,6 +170,7 @@ export function JobsPage() {
     s.set('includeFiltered', String(get('hidden') === '1'));
     s.set('tagMode', get('tagMode', 'any'));
     if (get('q')) s.set('q', get('q'));
+    if (get('loc')) s.set('location', get('loc'));
     for (const k of LIST_KEYS) getList(k).forEach((v) => s.append(k, v));
     return s.toString();
   }, [params, minScore]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -173,6 +185,11 @@ export function JobsPage() {
 
   const tags = getList('tags');
   const f = facets.data;
+  // Countries with jobs, most first; a selected country stays listed even when its count is 0.
+  const countryLabels = useMemo(() => {
+    const codes = [...new Set([...(f?.country ?? []).map((c: Facet) => c.value), ...getList('country')])] as string[];
+    return Object.fromEntries(codes.map((c) => [c, countryName(c)]));
+  }, [f, params]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const columns: GridColDef[] = [
     {
@@ -285,6 +302,17 @@ export function JobsPage() {
                 <MenuItem value="saved">Saved</MenuItem>
                 <MenuItem value="dismissed">Dismissed</MenuItem>
               </TextField>
+            </Box>
+            <Box className="grid gap-3 sm:grid-cols-2">
+              <MultiSelect label="Country" value={getList('country')} onChange={(v) => update({ country: v })} labels={countryLabels} facets={f?.country} />
+              <TextField
+                label="City or region"
+                value={get('loc')}
+                onChange={(e) => update({ loc: e.target.value })}
+                placeholder="e.g. Hamburg"
+                helperText={getList('country').length ? 'Countries in Europe also include Europe-wide remote jobs.' : undefined}
+                slotProps={{ inputLabel: { shrink: true } }}
+              />
             </Box>
             <Box className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
               <MultiSelect label="Employment type" value={getList('type')} onChange={(v) => update({ type: v })} labels={EMPLOYMENT_LABEL} facets={f?.employment_type} />

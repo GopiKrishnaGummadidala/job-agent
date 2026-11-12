@@ -52,8 +52,11 @@ Open http://localhost:5173, create an account, then:
    SmartRecruiters needs one request per job description, so large employers load the newest
    1,000 postings and fill in descriptions 150 at a time on each refresh. LinkedIn, Indeed,
    StepStone and XING forbid automated access, and Workday has no public feed, so they are not supported.
-4. **Job Explorer**: filter by date posted (24 hours to a month), employment type, workplace
-   (remote/hybrid/on-site), seniority, source, company and CV tags. Filters are kept in the page
+4. **Job Explorer**: filter by country, city, date posted (24 hours to a month), employment type, workplace
+   (remote/hybrid/on-site), seniority, source, company and CV tags. Countries are worked out from
+   each posting's location (city names included, e.g. Göttingen → Germany). A country in your
+   preferred locations (e.g. `Germany`) covers its cities and Europe-wide remote jobs, and remote
+   jobs limited to other countries ("Remote - US") are filtered out. Filters are kept in the page
    address, so you can bookmark a search. Employment type and workplace come from Lever and Ashby
    directly and are inferred from the title and description for Greenhouse. Open a job and choose
    **Prepare application**.
@@ -83,7 +86,7 @@ per job version, and paid calls stop at the monthly budget you set.
 npm test
 ```
 
-21 tests run against the local database: cross-user isolation (API and row-level security),
+39 tests run against the local database: cross-user isolation (API and row-level security),
 byte-identical read-only resumes, approval invalidation on edit, idempotent submission records,
 and form pre-fill on Greenhouse/Lever/Ashby-style forms without submitting.
 
