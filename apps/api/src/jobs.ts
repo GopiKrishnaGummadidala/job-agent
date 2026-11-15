@@ -83,7 +83,7 @@ export class JobsController {
            and (cardinality($13::text[]) = 0 or j.countries && $13::text[]
                 or ('${EUROPE_WIDE}' = any(j.countries) and $13::text[] && $14::text[]))
            and ($15::text is null or j.location ilike $15)
-         order by coalesce(m.ai_score, m.score) desc, coalesce(j.posted_at, j.first_seen_at) desc
+         order by coalesce(j.posted_at, j.first_seen_at) desc, coalesce(m.ai_score, m.score) desc
          limit 1000`,
         [
           f.minScore ?? null,

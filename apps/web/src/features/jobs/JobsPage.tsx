@@ -33,11 +33,11 @@ import { statusColor, statusLabel } from '../../styles/theme';
 
 const POSTED = [
   { value: 'any', label: 'Any time' },
-  { value: '1d', label: 'Past 24 hours' },
-  { value: '3d', label: 'Past 3 days' },
-  { value: '7d', label: 'Past week' },
-  { value: '14d', label: 'Past 2 weeks' },
-  { value: '30d', label: 'Past month' },
+  { value: '1d', label: '24 hours' },
+  { value: '3d', label: '3 days' },
+  { value: '7d', label: '1 week' },
+  { value: '14d', label: '2 weeks' },
+  { value: '30d', label: '1 month' },
 ];
 
 export const EMPLOYMENT_LABEL: Record<string, string> = {
@@ -225,8 +225,9 @@ export function JobsPage() {
       field: 'posted',
       headerName: 'Posted',
       width: 110,
-      valueGetter: (_, row) => row.posted_at ?? row.first_seen_at,
-      valueFormatter: (v) => ago(v),
+      type: 'dateTime',
+      valueGetter: (_, row) => new Date(row.posted_at ?? row.first_seen_at),
+      valueFormatter: (v: Date) => ago(v.toISOString()),
     },
     {
       field: 'draft_status',
@@ -247,7 +248,7 @@ export function JobsPage() {
     <>
       <PageHeader
         title="Job Explorer"
-        subtitle="Jobs from your boards, ranked by rule-based match. Use AI assessment on the ones worth a closer look."
+        subtitle="Jobs from your boards, newest first. Click a column header to sort by match instead. Use AI assessment on the ones worth a closer look."
         actions={
           <Button startIcon={<RefreshCw size={16} />} onClick={() => sync.mutate()} disabled={sync.isPending || noBoards}>
             {sync.isPending ? 'Refreshing…' : 'Refresh boards'}
@@ -274,13 +275,23 @@ export function JobsPage() {
       ) : (
         <>
           <Paper className="mb-3 flex flex-col gap-3 p-4">
-            <Box className="grid gap-3 md:grid-cols-[2fr_1fr_1.2fr_1fr]">
-              <TextField label="Search role, company or location" value={get('q')} onChange={(e) => update({ q: e.target.value })} />
-              <TextField select label="Date posted" value={get('posted', 'any')} onChange={(e) => update({ posted: e.target.value === 'any' ? null : e.target.value })}>
+            <Box className="flex flex-wrap items-center gap-2">
+              <Typography variant="body2" color="text.secondary" id="posted-label" className="mr-1">Date posted</Typography>
+              <ToggleButtonGroup
+                size="small"
+                exclusive
+                value={get('posted', 'any')}
+                onChange={(_, v) => v && update({ posted: v === 'any' ? null : v })}
+                aria-labelledby="posted-label"
+                className="flex-wrap"
+              >
                 {POSTED.map((p) => (
-                  <MenuItem key={p.value} value={p.value}>{p.label}</MenuItem>
+                  <ToggleButton key={p.value} value={p.value} sx={{ textTransform: 'none', px: 1.5 }}>{p.label}</ToggleButton>
                 ))}
-              </TextField>
+              </ToggleButtonGroup>
+            </Box>
+            <Box className="grid gap-3 md:grid-cols-[2fr_1.2fr_1fr]">
+              <TextField label="Search role, company or location" value={get('q')} onChange={(e) => update({ q: e.target.value })} />
               <Box className="px-2">
                 <Typography variant="caption" color="text.secondary" id="min-score-label">
                   Minimum match: {minDraft}
@@ -409,7 +420,10 @@ export function JobsPage() {
                 density="compact"
                 disableRowSelectionOnClick
                 onRowClick={(p) => update({ job: String(p.id) })}
-                initialState={{ pagination: { paginationModel: { pageSize: 50 } } }}
+                initialState={{
+                  pagination: { paginationModel: { pageSize: 50 } },
+                  sorting: { sortModel: [{ field: 'posted', sort: 'desc' }] },
+                }}
                 pageSizeOptions={[25, 50, 100]}
                 sx={{ border: 0, '& .MuiDataGrid-row': { cursor: 'pointer' } }}
               />
