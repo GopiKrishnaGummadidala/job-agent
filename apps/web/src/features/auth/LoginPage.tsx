@@ -1,5 +1,5 @@
 import { Alert, Box, Button, Paper, Tab, Tabs, TextField, Typography } from '@mui/material';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, type FormEvent } from 'react';
 import { api, errorText } from '../../lib/api';
 
@@ -8,6 +8,12 @@ export function LoginPage() {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [signupCode, setSignupCode] = useState('');
+  const registration = useQuery({
+    queryKey: ['registration'],
+    queryFn: () => api<{ requiresCode: boolean }>('/auth/registration'),
+    enabled: mode === 'register',
+  });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -16,7 +22,7 @@ export function LoginPage() {
     setBusy(true);
     setError('');
     try {
-      const me = await api(`/auth/${mode}`, { method: 'POST', json: { email, password } });
+      const me = await api(`/auth/${mode}`, { method: 'POST', json: { email, password, ...(mode === 'register' ? { signupCode } : {}) } });
       qc.setQueryData(['me'], me);
     } catch (err) {
       setError(errorText(err));
@@ -49,8 +55,12 @@ export function LoginPage() {
             onChange={(e) => setPassword(e.target.value)}
             helperText={mode === 'register' ? 'At least 10 characters' : undefined}
           />
+          {mode === 'register' && registration.data?.requiresCode && (
+            <TextField label="Account invitation code" autoComplete="off" required value={signupCode}
+              onChange={(e) => setSignupCode(e.target.value)} />
+          )}
           {error && <Alert severity="error">{error}</Alert>}
-          <Button type="submit" variant="contained" size="large" disabled={busy}>
+          <Button type="submit" variant="contained" size="large" disabled={busy || (mode === 'register' && !registration.data)}>
             {mode === 'login' ? 'Sign in' : 'Create account'}
           </Button>
         </form>

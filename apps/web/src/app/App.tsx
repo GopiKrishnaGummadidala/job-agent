@@ -1,4 +1,5 @@
 import { Box, CircularProgress } from '@mui/material';
+import { EmailManagementPage } from '../features/email/EmailManagementPage';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { ApplicationsPage } from '../features/applications/ApplicationsPage';
 import { ApprovalsPage } from '../features/approvals/ApprovalsPage';
@@ -32,6 +33,7 @@ export function App() {
       <Route element={<AppShell email={me.data.email} />}>
         <Route index element={<OverviewPage />} />
         <Route path="jobs" element={<JobsPage />} />
+        <Route path="email/:provider?" element={<EmailManagementPage />} />
         <Route path="approvals" element={<ApprovalsPage />} />
         <Route path="approvals/:id" element={<ApprovalsPage />} />
         <Route path="applications" element={<ApplicationsPage />} />

@@ -64,6 +64,38 @@ Open http://localhost:5173, create an account, then:
    **Open & pre-fill apply form** opens a browser window with the employer's form filled in;
    review it, submit it there, then click **I submitted it**.
 
+## Share jobs and resumes
+
+In **Email Management → Manage workspace access**, create an invitation for the
+delegate's Job Agent email and share the one-time code privately. The delegate
+signs in with their own account, accepts the code there, and selects the shared
+workspace. They can update imported job statuses. Gmail import stays in the
+mailbox owner's workspace, and imported alerts remain unread for review.
+
+Set `RESUME_BUILDER_ROOT` to the absolute path of the Resume Builder checkout
+and restart Job Agent. Its menu opens a new tab with the same session and the
+selected workspace. Editable documents are stored in Job Agent's PostgreSQL
+database. Transfer existing Resume Builder documents using its JSON export and
+import. The owner can revoke a delegate from Email Management.
+
+## Connect Gmail locally
+
+In the Google Cloud project with the Gmail API enabled, configure Google Auth Platform
+for an external testing audience and add the mailbox owner as a test user. Add the
+`https://www.googleapis.com/auth/gmail.modify` scope. Create a Web application OAuth
+client with this authorized redirect URI:
+
+```text
+http://localhost:5173/api/me/gmail/callback
+```
+
+Set `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REDIRECT_URI` and `GMAIL_TOKEN_KEY`
+in the local `.env`. Generate the stable encryption key with
+`node -p "require('node:crypto').randomBytes(32).toString('base64')"`.
+Run the migrations, restart the API, then open the app at `http://localhost:5173` and
+select **Sources & Settings → Gmail → Connect Gmail**. The connection is per signed-in
+Job Agent account. This connection setup stores access for a future job-alert import.
+
 Browser pre-fill (`ASSIST=local`) opens Chromium on the machine running the API. If Playwright's
 browser is not installed yet: `npx playwright install chromium`.
 

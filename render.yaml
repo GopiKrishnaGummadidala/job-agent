@@ -1,0 +1,30 @@
+services:
+  - type: web
+    runtime: node
+    name: job-agent
+    plan: free
+    region: frankfurt
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start -w apps/api
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: JOB_AGENT_HOSTED
+        value: "true"
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: ASSIST
+        value: "off"
+      - key: SCHEDULER
+        value: "off"
+      - key: RESUME_BUILDER_ROOT
+        value: deploy-assets/resume-builder
+      - key: WEB_ORIGIN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: JOB_AGENT_SIGNUP_EMAILS
+        sync: false
+      - key: JOB_AGENT_SIGNUP_CODE_HASHES
+        sync: false

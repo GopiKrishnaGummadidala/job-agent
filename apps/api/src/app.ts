@@ -23,6 +23,9 @@ import { config } from './config';
 import { Db } from './db';
 import { DraftsController } from './drafts';
 import { JobsController } from './jobs';
+import { GmailController } from './gmail';
+import { WorkspacesController } from './workspaces';
+import { ResumeBuilderController, builderAvailable, builderRoot, builderWorkspace } from './resume-builder';
 import { MatchingService } from './matching/matching.service';
 import { ProfileController } from './profile';
 import { ResumesController } from './resumes';
@@ -57,6 +60,9 @@ class HealthController {
     ProfileController,
     SourcesController,
     JobsController,
+    GmailController,
+    WorkspacesController,
+    ResumeBuilderController,
     ResumesController,
     DraftsController,
     AiController,
@@ -96,6 +102,31 @@ export async function createApp(): Promise<INestApplication> {
   const app = await NestFactory.create(AppModule, { logger: ['error', 'warn', 'log'] });
   app.setGlobalPrefix('api');
   app.use(cookieParser());
+  if (builderAvailable && builderRoot) {
+    const assetRoot = builderRoot;
+    app.use((req: Request, res: Response, next: NextFunction) => {
+      if (!req.path.startsWith('/resume-builder/')) return next();
+      const [, , workspace, ...parts] = req.path.split('/');
+      if (!builderWorkspace.test(workspace ?? '')) return res.sendStatus(404);
+      const asset = parts.join('/');
+      if (asset.startsWith('api/') && req.get('x-craftfolio') === '1') {
+        const route = asset.slice(4);
+        if (!/^(auth\/(me|logout)|tailor|docs(?:\/[^/%?]+)?)$/.test(route)) return res.sendStatus(404);
+        const query = req.url.slice(req.path.length);
+        if (route === 'auth/logout') req.url = '/api/auth/logout';
+        else req.url = '/api/me/resume-builder/' + workspace + '/' + route + query;
+        req.headers['x-requested-with'] = 'job-agent';
+        return next();
+      }
+      if (req.method !== 'GET' && req.method !== 'HEAD') return res.sendStatus(404);
+      if (!asset && !req.path.endsWith('/')) return res.redirect(308, '/resume-builder/' + workspace + '/');
+      const file = asset || 'index.html';
+      if (file.endsWith('.local.js')) return res.sendStatus(404);
+      if (file !== 'index.html' && !/^(css|js|fonts)\/[\w./-]+\.(css|js|woff2?|ttf|png|svg)$/i.test(file)) return res.sendStatus(404);
+      if (file.split('/').some((part) => part === '..' || part.startsWith('.'))) return res.sendStatus(404);
+      return res.sendFile(file, { root: assetRoot });
+    });
+  }
   app.use((_: Request, res: Response, next: NextFunction) => {
     res.setHeader('x-content-type-options', 'nosniff');
     res.setHeader('referrer-policy', 'same-origin');

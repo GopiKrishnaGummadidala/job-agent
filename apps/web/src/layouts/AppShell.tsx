@@ -22,6 +22,7 @@ import {
   FileText,
   LayoutDashboard,
   LogOut,
+  Mail,
   Menu,
   Moon,
   Send,
@@ -38,6 +39,7 @@ const WIDTH = 232;
 const NAV = [
   { to: '/', label: 'Overview', icon: LayoutDashboard },
   { to: '/jobs', label: 'Job Explorer', icon: BriefcaseBusiness },
+  { to: '/email', label: 'Email Management', icon: Mail },
   { to: '/approvals', label: 'Approval Queue', icon: ClipboardCheck, badge: true },
   { to: '/applications', label: 'Applications', icon: Send },
   { to: '/resumes', label: 'Resume Library', icon: FileText },
@@ -54,6 +56,13 @@ export function AppShell({ email }: { email: string }) {
   const { mode, systemMode, setMode } = useColorScheme();
   const dark = (mode === 'system' ? systemMode : mode) === 'dark';
   const dash = useQuery({ queryKey: ['dashboard'], queryFn: () => api('/me/dashboard') });
+  const workspaceAccess = useQuery({
+    queryKey: ['workspace-access'],
+    queryFn: () => api<{ resumeBuilder: boolean; shared: { id: string }[] }>('/me/workspaces'),
+  });
+  const selectedWorkspace = new URLSearchParams(useLocation().search).get('workspace');
+  const builderWorkspace = selectedWorkspace && workspaceAccess.data?.shared.some(({ id }) => id === selectedWorkspace)
+    ? selectedWorkspace : 'personal';
 
   const logout = async () => {
     await api('/auth/logout', { method: 'POST' });
@@ -90,6 +99,13 @@ export function AppShell({ email }: { email: string }) {
           );
         })}
       </List>
+      {workspaceAccess.data?.resumeBuilder && (
+        <ListItemButton component="a" href={'/resume-builder/' + builderWorkspace + '/'} target="_blank"
+          rel="noopener noreferrer" sx={{ mx: 2, mb: 1, borderRadius: 2 }}>
+          <ListItemIcon sx={{ minWidth: 36 }}><FileText size={20} aria-hidden /></ListItemIcon>
+          <ListItemText primary="Resume Builder" />
+        </ListItemButton>
+      )}
       <Box className="px-4 pb-4">
         <Typography variant="caption" color="text.secondary" noWrap component="div">
           {email}

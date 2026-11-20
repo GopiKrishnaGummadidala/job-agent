@@ -26,8 +26,49 @@ export function SettingsPage() {
       <Box className="grid gap-4 lg:grid-cols-2">
         <SourcesCard />
         <AiCard />
+        <GmailCard />
       </Box>
     </>
+  );
+}
+
+function GmailCard() {
+  const qc = useQueryClient();
+  const result = new URLSearchParams(window.location.search).get('gmail');
+  const gmail = useQuery({
+    queryKey: ['gmail'],
+    queryFn: () => api<{ configured: boolean; connection: { email: string } | null }>('/me/gmail'),
+  });
+  const connect = useMutation({
+    mutationFn: () => api<{ url: string }>('/me/gmail/connect', { method: 'POST' }),
+    onSuccess: ({ url }) => window.location.assign(url),
+  });
+  const disconnect = useMutation({
+    mutationFn: () => api('/me/gmail', { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['gmail'] }),
+  });
+  return (
+    <Paper className="p-4">
+      <Typography variant="h6" component="h2">Gmail</Typography>
+      <Typography variant="body2" color="text.secondary" className="mb-3">
+        Connect your mailbox for job alerts. Google asks for permission to read messages and mark them as read.
+      </Typography>
+      <ErrorAlert error={gmail.error ?? connect.error ?? disconnect.error} />
+      {result === 'failed' && <Alert severity="warning">Gmail could not be connected. Try connecting again.</Alert>}
+      {gmail.isLoading && <LoadingBlock rows={1} />}
+      {gmail.data?.connection ? (
+        <Box className="flex flex-wrap items-center gap-2">
+          <Typography variant="body2">Connected as {gmail.data.connection.email}</Typography>
+          <Button onClick={() => disconnect.mutate()} disabled={disconnect.isPending || !gmail.data.configured}>
+            Disconnect Gmail
+          </Button>
+        </Box>
+      ) : gmail.data?.configured ? (
+        <Button variant="contained" onClick={() => connect.mutate()} disabled={connect.isPending}>Connect Gmail</Button>
+      ) : gmail.data && (
+        <Alert severity="info">Gmail needs Google OAuth settings before you can connect.</Alert>
+      )}
+    </Paper>
   );
 }
 

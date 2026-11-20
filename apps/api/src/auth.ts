@@ -6,6 +6,7 @@ import {
   Controller,
   createParamDecorator,
   ExecutionContext,
+  ForbiddenException,
   Get,
   HttpCode,
   HttpException,
@@ -132,6 +133,7 @@ const credentials = z.object({
   email: z.string().trim().toLowerCase().pipe(z.email().max(254)),
   password: z.string().min(10, 'Use at least 10 characters').max(200),
 });
+const registration = credentials.extend({ signupCode: z.string().max(100).optional() });
 
 @Controller('auth')
 export class AuthController {
@@ -149,11 +151,25 @@ export class AuthController {
 
   @Post('register')
   async register(@Body() body: unknown, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    const { email, password } = parse(credentials, body);
+    const { email, password, signupCode } = parse(registration, body);
     this.auth.throttle(`register:${req.ip}`);
+    if (process.env.JOB_AGENT_HOSTED === 'true') {
+      const allowed = (process.env.JOB_AGENT_SIGNUP_EMAILS ?? '').split(',').map((item) => item.trim().toLowerCase());
+      const hashes = (process.env.JOB_AGENT_SIGNUP_CODE_HASHES ?? '').split(',').map((item) => item.trim());
+      const expected = hashes[allowed.indexOf(email)];
+      if (!signupCode || !expected || !/^[a-f0-9]{64}$/.test(expected) ||
+          !timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(sha256(signupCode), 'hex'))) {
+        throw new ForbiddenException('Registration requires a valid invitation code.');
+      }
+    }
     const id = await this.auth.register(email, password);
     this.setCookie(res, await this.auth.createSession(id));
     return { id, email };
+  }
+
+  @Get('registration')
+  registration() {
+    return { requiresCode: process.env.JOB_AGENT_HOSTED === 'true' };
   }
 
   @Post('login')

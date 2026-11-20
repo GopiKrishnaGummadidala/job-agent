@@ -1,0 +1,170 @@
+// Page breaks. A document is drawn as one tall page and cut into pages of a fixed height for the PDF.
+// Without care, the cut falls wherever a page fills up and can split a line of text, a job's title
+// from its company, or a heading from what follows it. paginate() moves such blocks down to the top
+// of the next page (by adding to their top margin) so that every cut falls between blocks, with a
+// margin at the top and bottom of every page after the first.
+//
+// It works on the rendered page, so it runs in the browser: before a PDF is captured, and on the
+// live preview so the preview shows the same pages.
+
+/** Blocks that must not be split, in the order they are checked. */
+const BLOCKS = [
+  '.r-side > .r-sec',         // a side card or side section, when it fits in the space of one page
+  '.r-sec > .r-h',            // a section heading, kept with the first line after it
+  '.r-item',                  // an entry's title, employer and dates, kept with its first bullet
+  '.page li',                 // one bullet, one skill, one language
+  '.r-p, .r-about',           // a paragraph
+  '.r-chips',                 // a row of skill chips
+  '.l-body > p, .l-banner > p, .l-edit > p, .l-h, .b-to, .b-close, .l-close', // letter paragraphs, address, closing
+];
+
+/** Top and bottom page margins (CSS px) used after a page break. */
+export const BREAK_MARGINS = Object.freeze({ top: 22, bottom: 26 });
+
+const PUSHED = 'data-pb';
+
+/** Undo an earlier pagination of `root` (all of it, or the part inside an editor being typed in). */
+export function unpaginate(root) {
+  root.querySelectorAll(`[${PUSHED}]`).forEach(el => {
+    el.style.marginTop = el.getAttribute(PUSHED) === '-' ? '' : el.getAttribute(PUSHED);
+    el.removeAttribute(PUSHED);
+  });
+  root.querySelectorAll('.page-no, .r-h-cont').forEach(added => added.remove());
+  if (root.matches?.('[data-page-numbers]')) root.style.minHeight = '';
+}
+
+/**
+ * "Page 1 of 2" at the foot of every page, for templates that ask for it (data-page-numbers). The
+ * page is made a whole number of pages tall so the last footer sits at the foot of the last page.
+ */
+function numberPages(page, pageH, pages) {
+  if (pages < 2) return;
+  page.style.minHeight = `${pages * pageH}px`;
+  for (let k = 1; k <= pages; k++) {
+    const no = document.createElement('div');
+    no.className = 'page-no';
+    no.textContent = `Page ${k} of ${pages}`;
+    no.style.top = `${k * pageH - 22}px`;
+    page.appendChild(no);
+  }
+}
+
+/**
+ * Move blocks of `page` that would be cut by a page break down to the next page.
+ * @param {HTMLElement} page the rendered `.page`; it may be scaled with a CSS transform
+ * @param {number} pageH height of one page in CSS px
+ * @returns {number} the number of pages
+ */
+export function paginate(page, pageH, { top = BREAK_MARGINS.top, bottom = BREAK_MARGINS.bottom } = {}) {
+  page.classList.remove('skills-compact', 'skills-dense');
+  const signature = page.classList.contains('tpl-signature') && !page.classList.contains('tpl-signature-one');
+  if (signature) {
+    // Fit the first-page sidebar, not the total page count: Languages belongs on page two.
+    // Reduce chip padding only when Skills + Certifications exceed their first-page budget.
+    unpaginate(page);
+    const fits = () => {
+      const sections = [...page.querySelectorAll('.r-side > .r-sec')]
+        .filter(el => ['skills', 'certifications'].includes(el.dataset.sec));
+      const scale = page.getBoundingClientRect().height / page.offsetHeight || 1;
+      return sections.every(el => (el.getBoundingClientRect().bottom - page.getBoundingClientRect().top) / scale <= pageH - bottom);
+    };
+    if (!fits()) page.classList.add('skills-compact');
+  }
+  return paginateLayout(page, pageH, { top, bottom });
+}
+
+function paginateLayout(page, pageH, { top, bottom }) {
+  unpaginate(page);
+  const scale = page.getBoundingClientRect().height / page.offsetHeight || 1;
+  const origin = () => page.getBoundingClientRect().top;
+  const box = el => {
+    const r = el.getBoundingClientRect();
+    return { top: (r.top - origin()) / scale, bottom: (r.bottom - origin()) / scale };
+  };
+  const usable = pageH - top - bottom;
+  const whole = []; // side cards kept whole: what is inside them is not checked again
+
+  // Document order, top to bottom: moving a block moves everything after it, so each block is
+  // measured only after the blocks before it have been placed.
+  for (const el of page.querySelectorAll(BLOCKS.join(','))) {
+    if (whole.some(w => w.contains(el))) continue;
+    if (page.classList.contains('tpl-signature') && !page.classList.contains('tpl-signature-one')
+      && el.matches('.r-side > [data-sec="languages"]') && el.previousElementSibling
+      && box(el).top < pageH + top) {
+      push(el, pageH + top - box(el).top, box);
+    }
+    const span = extent(el, box, usable);
+    if (!span || span.bottom - span.top > usable) continue; // too tall to keep whole: it may split inside
+    if (el.matches(BLOCKS[0])) whole.push(el);
+    for (let b = pageH; b - bottom < span.bottom; b += pageH) {
+      if (span.top >= b + top) continue;
+      if (span.bottom > b - bottom) {
+        // An entry that continues a section on a new page gets the section's heading repeated above it.
+        const heading = el.matches('.r-item') && el.previousElementSibling?.matches('.r-item')
+          && el.closest('.r-sec')?.querySelector(':scope > .r-h');
+        if (heading) {
+          const copy = heading.cloneNode(true);
+          copy.classList.add('r-h-cont');
+          copy.setAttribute('aria-hidden', 'true');
+          copy.querySelectorAll('button').forEach(button => button.remove());
+          el.before(copy);
+          push(copy, b + top - box(copy).top, box);
+        } else {
+          push(span.el || el, b + top - span.top, box);
+        }
+        break;
+      }
+    }
+  }
+  const pages = Math.max(1, Math.ceil((page.scrollHeight - 2) / pageH));
+  if (page.hasAttribute('data-page-numbers')) numberPages(page, pageH, pages);
+  return pages;
+}
+
+/** An entry up to this share of a page is kept whole, like a printed CV; a longer one may split between bullets. */
+const WHOLE_ENTRY = 0.4;
+
+/**
+ * The part of a block that must stay together, and the element to move (`el`, when it is not the
+ * block itself): a heading with the first line after it; a short entry whole, a longer one's header
+ * with its first bullet; a list's last bullet with the one before it, so no bullet starts a page alone;
+ * anything else as it is.
+ */
+function extent(el, box, usable) {
+  const own = box(el);
+  if (!own.bottom || own.bottom <= own.top) return null;
+  if (el.matches('.r-sec > .r-h')) {
+    const next = el.nextElementSibling;
+    // The first thing drawn after the heading. A row laid out with display: contents has no box of its
+    // own (zero height), so the first candidate that really has one is used.
+    const first = [...(next?.querySelectorAll('li, .r-row, p, span, strong') || [])].find(c => c.getBoundingClientRect().height > 0) || next;
+    return { top: own.top, bottom: first ? Math.max(own.bottom, box(first).bottom) : own.bottom };
+  }
+  if (el.matches('.r-item')) {
+    if (own.bottom - own.top <= usable * WHOLE_ENTRY) return own;
+    const firstBullet = el.querySelector('li');
+    return { top: own.top, bottom: firstBullet ? box(firstBullet).bottom : own.bottom };
+  }
+  const prev = el.previousElementSibling;
+  if (el.matches('.r-item > ul > li') && !el.nextElementSibling && prev?.matches('li')) {
+    return { top: box(prev).top, bottom: own.bottom, el: prev };
+  }
+  return own;
+}
+
+/**
+ * Move `el` down by `by` px. A top margin can merge with the bottom margin of the block above it
+ * (margin collapsing), so the move is measured and corrected until the block is where it should be.
+ */
+function push(el, by, box) {
+  if (by <= 0) return;
+  const target = el.matches('.r-sec > .r-h') ? el.parentElement : el;
+  if (!target.hasAttribute(PUSHED)) target.setAttribute(PUSHED, target.style.marginTop || '-');
+  const goal = box(el).top + by;
+  for (let i = 0; i < 4; i++) {
+    const missing = goal - box(el).top;
+    if (missing < 0.5) break;
+    const current = parseFloat(getComputedStyle(target).marginTop) || 0;
+    target.style.marginTop = `${current + missing}px`;
+  }
+}

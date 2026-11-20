@@ -1,7 +1,9 @@
 node_modules/
 dist/
 .env
+.env.neon
 *.log
 .vite/
 *.tsbuildinfo
 test-results/
+deploy-assets/

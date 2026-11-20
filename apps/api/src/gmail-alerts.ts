@@ -1,0 +1,71 @@
+import { htmlToText } from './sources/adapters';
+
+export interface LinkedInAlertJob {
+  externalId: string;
+  url: string;
+  title: string | null;
+}
+
+export const providers = ['linkedin', 'indeed', 'glassdoor'] as const;
+export type Provider = typeof providers[number];
+
+export const alertSenders: Record<Provider, string> = {
+  linkedin: 'from:jobalerts-noreply@linkedin.com',
+  indeed: '{from:indeed.com from:indeedmail.com}',
+  glassdoor: 'from:glassdoor.com',
+};
+
+export function jobLink(provider: Provider, id: string): string {
+  if (provider === 'indeed') return 'https://www.indeed.com/viewjob?jk=' + encodeURIComponent(id);
+  if (provider === 'glassdoor') return 'https://www.glassdoor.com/partner/jobListing.htm?jobListingId=' + encodeURIComponent(id);
+  return 'https://www.linkedin.com/jobs/view/' + encodeURIComponent(id) + '/';
+}
+
+function jobId(href: string, provider: Provider): string | null {
+  try {
+    const url = new URL(href.replace(/&amp;/gi, '&'));
+    if (url.protocol !== 'https:' || url.username || url.password) return null;
+    if (provider === 'indeed') {
+      if (!/^(?:[a-z-]+\.)?indeed\.(com|de|co\.uk|fr|ca|nl|ie|com\.au)$/.test(url.hostname)) return null;
+      if (!/^\/(viewjob|rc\/clk(?:\/dl)?|pagead\/clk|m\/basecamp\/viewjob)\/?$/.test(url.pathname)) return null;
+      const id = url.searchParams.get('jk') ?? url.searchParams.get('vjk');
+      return id && /^[a-f0-9]{16}$/i.test(id) ? id.toLowerCase() : null;
+    }
+    if (provider === 'glassdoor') {
+      if (!/^(?:www\.)?glassdoor\.(com|de|co\.uk|fr|ca|nl|ie|com\.au)$/.test(url.hostname)) return null;
+      if (!/^\/(job-listing\/[^/]+|partner\/jobListing)\.htm$/i.test(url.pathname)) return null;
+      const id = url.searchParams.get('jl') ?? url.searchParams.get('jobListingId');
+      return id && /^\d{1,24}$/.test(id) ? id : null;
+    }
+    if (!['www.linkedin.com', 'linkedin.com'].includes(url.hostname)) return null;
+    const match = url.pathname.match(/^\/(?:comm\/)?jobs\/view\/(?:[^/]*-)?(\d+)\/?$/);
+    return match?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Collect direct job links without following redirects or loading remote content. */
+export function parseAlert(html: string, plainText: string, provider: Provider): LinkedInAlertJob[] {
+  const jobs = new Map<string, LinkedInAlertJob>();
+  const collect = (href: string, label = '') => {
+    const externalId = jobId(href, provider);
+    if (!externalId) return;
+    const text = htmlToText(label).replace(/\s+/g, ' ').trim();
+    const title = !text || /^(view|see|apply(?: now)?|view job|see job|view details|job details)$/i.test(text)
+      ? null
+      : text.slice(0, 250);
+    if (jobs.has(externalId) && (!title || jobs.get(externalId)?.title)) return;
+    jobs.set(externalId, { externalId, url: jobLink(provider, externalId), title });
+  };
+
+  for (const [, quoted, singleQuoted, unquoted, label] of html.matchAll(
+    /<a\b[^>]*?\s+href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>([\s\S]*?)<\/a\s*>/gi,
+  )) {
+    collect(quoted ?? singleQuoted ?? unquoted, label);
+  }
+  for (const [url] of plainText.matchAll(/https:\/\/[^\s<>"]+/gi)) collect(url.replace(/[).,]+$/, ''));
+  return [...jobs.values()];
+}
+
+export const parseLinkedInAlert = (html: string, text: string) => parseAlert(html, text, 'linkedin');

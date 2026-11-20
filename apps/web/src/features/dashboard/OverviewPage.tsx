@@ -97,6 +97,7 @@ export function OverviewPage() {
           )}
         </Paper>
       </Box>
+      <Button component={RouterLink} to="/email/linkedin" sx={{ mt: 2 }}>Open Email Management</Button>
     </>
   );
 }
