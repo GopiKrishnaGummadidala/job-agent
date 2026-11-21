@@ -126,7 +126,8 @@ export class GmailController {
     const [connection] = await this.db.asUser(userId, (q) => q('select encrypted_refresh_token from gmail_connections'));
     if (!connection) throw new ConflictException('Connect Gmail first.');
 
-    const summary = { alertsSaved: 0, jobsAdded: 0, unreadRetained: 0 };
+    const summary = { alertsSaved: 0, jobsAdded: 0, unreadRetained: 0, markedRead: 0 };
+    const savedMessages = new Set<string>();
     try {
       const exchange = await fetch('https://oauth2.googleapis.com/token', {
         method: 'POST',
@@ -184,8 +185,7 @@ export class GmailController {
             });
             summary.alertsSaved++;
             summary.jobsAdded += added;
-            // Link parsing cannot prove the alert contained no additional recommendations.
-            summary.unreadRetained++;
+            savedMessages.add(id);
           } catch {
             summary.unreadRetained++;
           }
@@ -193,6 +193,19 @@ export class GmailController {
         if (!page.nextPageToken) break;
         query.set('pageToken', page.nextPageToken);
       } while (true);
+      // Changing labels during pagination can remove messages from later search pages.
+      for (const id of savedMessages) {
+        try {
+          const result = await gmailRequest(token, `messages/${id}/modify`, {
+            method: 'POST',
+            body: JSON.stringify({ removeLabelIds: ['UNREAD'] }),
+          });
+          if (result.ok) summary.markedRead++;
+          else summary.unreadRetained++;
+        } catch {
+          summary.unreadRetained++;
+        }
+      }
       return summary;
     } catch (error) {
       if (error instanceof BadGatewayException) throw error;

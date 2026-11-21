@@ -70,7 +70,8 @@ In **Email Management → Manage workspace access**, create an invitation for th
 delegate's Job Agent email and share the one-time code privately. The delegate
 signs in with their own account, accepts the code there, and selects the shared
 workspace. They can update imported job statuses. Gmail import stays in the
-mailbox owner's workspace, and imported alerts remain unread for review.
+mailbox owner's workspace. After saving the recognized jobs, the importer marks
+the alert as read. Alerts with no recognized jobs or failed saves remain unread.
 
 Set `RESUME_BUILDER_ROOT` to the absolute path of the Resume Builder checkout
 and restart Job Agent. Its menu opens a new tab with the same session and the

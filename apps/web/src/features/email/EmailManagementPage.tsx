@@ -61,7 +61,7 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
     queryFn: () => api<{ external_id: string; title: string | null; received_at: string; url: string; status: JobStatus; status_at?: string; status_actor?: string }[]>('/me/gmail/jobs' + filter),
   });
   const run = useMutation({
-    mutationFn: () => api<{ alertsSaved: number; jobsAdded: number; unreadRetained: number }>('/me/gmail/jobs/import' + filter, {
+    mutationFn: () => api<{ alertsSaved: number; jobsAdded: number; unreadRetained: number; markedRead: number }>('/me/gmail/jobs/import' + filter, {
       method: 'POST',
     }),
     onSettled: () => qc.invalidateQueries({ queryKey: jobKey }),
@@ -99,6 +99,7 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
       {run.data && (
         <Alert sx={{ mx: 2, mb: 2 }} severity={run.data.unreadRetained ? 'warning' : 'success'}>
           Added {run.data.jobsAdded} jobs from {run.data.alertsSaved} alerts processed.
+          {run.data.markedRead > 0 && ` Marked ${run.data.markedRead} alerts as read in Gmail.`}
           {run.data.unreadRetained > 0 && ` ${run.data.unreadRetained} alerts stayed unread for review.`}
         </Alert>
       )}
