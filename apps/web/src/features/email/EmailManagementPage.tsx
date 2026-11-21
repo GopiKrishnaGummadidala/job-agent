@@ -59,7 +59,7 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
   });
   const jobs = useQuery({
     queryKey: jobKey,
-    queryFn: () => api<{ external_id: string; title: string | null; received_at: string; url: string; status: JobStatus; status_at?: string; status_actor?: string }[]>('/me/gmail/jobs' + filter),
+    queryFn: () => api<{ external_id: string; title: string | null; company: string | null; received_at: string; url: string; status: JobStatus; status_at?: string; status_actor?: string }[]>('/me/gmail/jobs' + filter),
   });
   const run = useMutation({
     mutationFn: () => api<{ alertsSaved: number; jobsAdded: number; unreadRetained: number; markedRead: number }>('/me/gmail/jobs/import' + filter, {
@@ -130,6 +130,7 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
                   <TableRow hover key={job.external_id} sx={{ '& td, & th': { py: 1 } }}>
                     <TableCell scope="row" component="th" sx={{ overflowWrap: 'anywhere' }}>
                       <Typography variant="body2" sx={{ fontWeight: 600 }}>{job.title ?? section.label + ' job'}</Typography>
+                      {job.company && <Typography variant="caption" color="text.secondary">{job.company}</Typography>}
                       <Typography variant="caption" color="text.secondary" sx={{ display: { xs: 'block', sm: 'none' } }}>
                         {fmtDateTime(job.received_at)}
                       </Typography>

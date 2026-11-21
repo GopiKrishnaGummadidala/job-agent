@@ -4,6 +4,7 @@ export interface LinkedInAlertJob {
   externalId: string;
   url: string;
   title: string | null;
+  company?: string;
 }
 
 export const providers = ['linkedin', 'indeed', 'glassdoor'] as const;
@@ -48,21 +49,31 @@ function jobId(href: string, provider: Provider): string | null {
 /** Collect direct job links without following redirects or loading remote content. */
 export function parseAlert(html: string, plainText: string, provider: Provider): LinkedInAlertJob[] {
   const jobs = new Map<string, LinkedInAlertJob>();
-  const collect = (href: string, label = '') => {
+  const collect = (href: string, label = '', company?: string) => {
     const externalId = jobId(href, provider);
     if (!externalId) return;
     const text = htmlToText(label).replace(/\s+/g, ' ').trim();
     const title = !text || /^(view|see|apply(?: now)?|view job|see job|view details|job details)$/i.test(text)
       ? null
       : text.slice(0, 250);
-    if (jobs.has(externalId) && (!title || jobs.get(externalId)?.title)) return;
-    jobs.set(externalId, { externalId, url: jobLink(provider, externalId), title });
+    const previous = jobs.get(externalId);
+    const employer = previous?.company ?? company;
+    jobs.set(externalId, {
+      externalId, url: jobLink(provider, externalId), title: previous?.title ?? title,
+      ...(employer ? { company: employer } : {}),
+    });
   };
 
-  for (const [, quoted, singleQuoted, unquoted, label] of html.matchAll(
+  const links = [...html.matchAll(
     /<a\b[^>]*?\s+href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>([\s\S]*?)<\/a\s*>/gi,
-  )) {
-    collect(quoted ?? singleQuoted ?? unquoted, label);
+  )].filter(([, quoted, singleQuoted, unquoted]) => jobId(quoted ?? singleQuoted ?? unquoted, provider));
+  for (const [index, link] of links.entries()) {
+    const [anchor, quoted, singleQuoted, unquoted, label] = link;
+    // Employer metadata belongs to the current job card, before the next job link.
+    const next = html.slice(link.index + anchor.length, links[index + 1]?.index);
+    const employer = next.match(/<(div|span|p|td)\b[^>]*(?:data-testid|class|itemprop)\s*=\s*["'][^"']*(?:company[-_ ]?name|companyname|hiringOrganization|job[-_ ]?company)[^"']*["'][^>]*>([\s\S]*?)<\/\1\s*>/i)?.[2];
+    const company = employer && htmlToText(employer).replace(/\s+/g, ' ').trim().slice(0, 200);
+    collect(quoted ?? singleQuoted ?? unquoted, label, company || undefined);
   }
   for (const [url] of plainText.matchAll(/https:\/\/[^\s<>"]+/gi)) collect(url.replace(/[).,]+$/, ''));
   return [...jobs.values()];

@@ -89,7 +89,7 @@ export class GmailController {
     const provider = parse(z.enum(providers).default('linkedin'), value);
     const owner = parse(z.uuid().optional(), workspace) ?? userId;
     const jobs = await this.db.asUser(userId, (q) => q(
-      `select j.external_id, j.title, j.received_at, j.status, j.status_at, u.email as status_actor
+      `select j.external_id, j.title, j.company, j.received_at, j.status, j.status_at, u.email as status_actor
        from gmail_alert_jobs j left join users u on u.id = j.status_actor_id
        where j.provider = $1 and j.user_id = $2 order by j.received_at desc, j.external_id`,
       [provider, owner],
@@ -171,14 +171,16 @@ export class GmailController {
               let count = 0;
               for (const job of jobs) {
                 const inserted = await q(
-                  `insert into gmail_alert_jobs (user_id, external_id, title, received_at, provider)
-                   values ($1, $2, $3, $4, $5) on conflict (user_id, provider, external_id) do nothing returning external_id`,
-                  [userId, job.externalId, job.title, receivedAt, provider],
+                  `insert into gmail_alert_jobs (user_id, external_id, title, received_at, provider, company)
+                   values ($1, $2, $3, $4, $5, $6) on conflict (user_id, provider, external_id) do nothing returning external_id`,
+                  [userId, job.externalId, job.title, receivedAt, provider, job.company ?? null],
                 );
                 count += inserted.length;
-                if (!inserted.length && job.title) {
-                  await q('update gmail_alert_jobs set title = $2 where external_id = $1 and provider = $3 and user_id = $4 and title is null',
-                    [job.externalId, job.title, provider, userId]);
+                if (!inserted.length && (job.title || job.company)) {
+                  await q(`update gmail_alert_jobs set title = coalesce(title, $2), company = coalesce(company, $5)
+                    where external_id = $1 and provider = $3 and user_id = $4
+                    and (title is null or company is null)`,
+                    [job.externalId, job.title, provider, userId, job.company ?? null]);
                 }
               }
               return count;

@@ -25,3 +25,12 @@ test('Indeed and Glassdoor alerts extract provider-specific job IDs', async () =
   assert.deepEqual(parseAlert(indeed + glassdoor, '', 'glassdoor').map(job => job.externalId), ['12345']);
   assert.deepEqual(parseAlert('<a href="https://glassdoor.com.example.org/partner/jobListing.htm?jobListingId=1">Fake</a>', '', 'glassdoor'), []);
 });
+
+test('employer labels stay with the corresponding job', () => {
+  const html = '<a href="https://www.linkedin.com/jobs/view/123">Engineer</a>'
+    + '<span class="company-name">Acme &amp; Co</span>'
+    + '<a href="https://www.linkedin.com/jobs/view/456">Developer</a>';
+  const jobs = parseLinkedInAlert(html, '');
+  assert.equal(jobs[0].company, 'Acme & Co');
+  assert.equal(jobs[1].company, undefined);
+});
