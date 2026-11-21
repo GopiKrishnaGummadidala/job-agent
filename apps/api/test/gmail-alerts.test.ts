@@ -34,3 +34,9 @@ test('employer labels stay with the corresponding job', () => {
   assert.equal(jobs[0].company, 'Acme & Co');
   assert.equal(jobs[1].company, undefined);
 });
+
+test('LinkedIn alert company is the first part of the company and location line', () => {
+  const html = '<a href="https://www.linkedin.com/comm/jobs/view/123">Engineer</a></td></tr>'
+    + '<tr><td class="pb-0"><p class="text-xs line-clamp-1">Acme &amp; Co &middot; Berlin (Hybrid)</p>';
+  assert.equal(parseLinkedInAlert(html, '')[0].company, 'Acme & Co');
+});

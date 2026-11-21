@@ -70,9 +70,15 @@ export function parseAlert(html: string, plainText: string, provider: Provider):
   for (const [index, link] of links.entries()) {
     const [anchor, quoted, singleQuoted, unquoted, label] = link;
     // Employer metadata belongs to the current job card, before the next job link.
-    const next = html.slice(link.index + anchor.length, links[index + 1]?.index);
-    const employer = next.match(/<(div|span|p|td)\b[^>]*(?:data-testid|class|itemprop)\s*=\s*["'][^"']*(?:company[-_ ]?name|companyname|hiringOrganization|job[-_ ]?company)[^"']*["'][^>]*>([\s\S]*?)<\/\1\s*>/i)?.[2];
-    const company = employer && htmlToText(employer).replace(/\s+/g, ' ').trim().slice(0, 200);
+    const start = link.index + anchor.length;
+    const next = html.slice(start, Math.min(start + 3000, links[index + 1]?.index ?? html.length));
+    const employer = next.match(/<(div|span|p|td)\b[^>]*(?:data-testid|class|itemprop)\s*=\s*["'][^"']*(?:company[-_ ]?name|hiringOrganization|job[-_ ]?company|employer[-_ ]?name)[^"']*["'][^>]*>([\s\S]*?)<\/\1\s*>/i)?.[2];
+    const linkedInLine = provider === 'linkedin'
+      ? next.match(/^\s*(?:<\/?(?:td|tr|p|div|span)\b[^>]*>\s*){0,8}?<(p|div|span)\b[^>]*\bclass=["'][^"']*line-clamp-1[^"']*["'][^>]*>([\s\S]*?)<\/\1\s*>/i)?.[2]
+      : undefined;
+    const linkedInParts = linkedInLine?.split(/\s*(?:&middot;|&#183;|&#x0*b7;|[·•])\s*/i);
+    const source = employer ?? (linkedInParts && linkedInParts.length > 1 ? linkedInParts[0] : undefined);
+    const company = source && htmlToText(source).replace(/\s+/g, ' ').trim().slice(0, 200);
     collect(quoted ?? singleQuoted ?? unquoted, label, company || undefined);
   }
   for (const [url] of plainText.matchAll(/https:\/\/[^\s<>"]+/gi)) collect(url.replace(/[).,]+$/, ''));
