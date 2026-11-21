@@ -15,7 +15,8 @@ const sections = [
   { id: 'indeed', label: 'Indeed' },
   { id: 'glassdoor', label: 'Glassdoor' },
 ];
-const statuses = { pending: 'Pending', viewed: 'Viewed', applied: 'Applied' } as const;
+const statuses = { pending: 'Pending', viewed: 'Viewed', applied: 'Applied', unfit: 'Unfit' } as const;
+const statusColors = { pending: 'default', viewed: 'info', applied: 'success', unfit: 'warning' } as const;
 type JobStatus = keyof typeof statuses;
 
 export function EmailManagementPage() {
@@ -137,8 +138,8 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
                       {fmtDateTime(job.received_at)}
                     </TableCell>
                     <TableCell>
-                      <Chip size="small" label={statuses[job.status]} color={job.status === 'applied' ? 'success' : job.status === 'viewed' ? 'info' : 'default'} />
-                      {job.status === 'applied' && job.status_actor && (
+                      <Chip size="small" label={statuses[job.status]} color={statusColors[job.status]} />
+                      {(job.status === 'applied' || job.status === 'unfit') && job.status_actor && (
                         <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
                           {job.status_actor} · {fmtDateTime(job.status_at)}
                         </Typography>
@@ -156,6 +157,11 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
                         {job.status !== 'applied' && (
                           <Button size="small" onClick={() => changeStatus.mutate({ id: job.external_id, status: 'applied' })}>
                             Mark as applied
+                          </Button>
+                        )}
+                        {job.status !== 'unfit' && job.status !== 'applied' && (
+                          <Button size="small" color="warning" onClick={() => changeStatus.mutate({ id: job.external_id, status: 'unfit' })}>
+                            Mark as unfit
                           </Button>
                         )}
                         {job.status !== 'pending' && (

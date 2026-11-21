@@ -101,15 +101,15 @@ export class GmailController {
   setJobStatus(@UserId() userId: string, @Param('id') id: string, @Body() input: unknown) {
     const { provider, status, workspace } = parse(z.object({
       provider: z.enum(providers),
-      status: z.enum(['pending', 'viewed', 'applied']),
+      status: z.enum(['pending', 'viewed', 'applied', 'unfit']),
       workspace: z.uuid().optional(),
     }), input);
     return this.db.asUser(userId, async (q) => {
       const [job] = await q(
         `update gmail_alert_jobs
-         set status = case when $3 = 'viewed' and status = 'applied' then status else $3 end,
-             status_actor_id = case when status = $3 or ($3 = 'viewed' and status = 'applied') then status_actor_id else $5 end,
-             status_at = case when status = $3 or ($3 = 'viewed' and status = 'applied') then status_at else now() end
+         set status = case when $3 = 'viewed' and status in ('applied', 'unfit') then status else $3 end,
+             status_actor_id = case when status = $3 or ($3 = 'viewed' and status in ('applied', 'unfit')) then status_actor_id else $5 end,
+             status_at = case when status = $3 or ($3 = 'viewed' and status in ('applied', 'unfit')) then status_at else now() end
          where provider = $1 and external_id = $2 and user_id = $4 returning status`,
         [provider, id, status, workspace ?? userId, userId],
       );

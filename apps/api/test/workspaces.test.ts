@@ -30,6 +30,12 @@ test('an invitation grants access to shared Gmail jobs and resumes until revoked
   assert.deepEqual((await delegate.call('GET', docs)).body.docs, [{ id: 'cv' }]);
   assert.deepEqual((await delegate.call('GET', '/me/resume-builder/personal/docs')).body.docs, []);
   assert.equal((await outsider.call('GET', docs)).status, 400);
+  const unfit = { provider: 'linkedin', status: 'unfit', workspace: owner.id };
+  assert.equal((await delegate.call('PATCH', '/me/gmail/jobs/123/status', unfit)).body.status, 'unfit');
+  assert.equal((await owner.call('PATCH', '/me/gmail/jobs/123/status', { ...unfit, status: 'viewed' })).body.status, 'unfit');
+  const [unfitJob] = (await owner.call('GET', '/me/gmail/jobs')).body;
+  assert.equal(unfitJob.status, 'unfit');
+  assert.equal(unfitJob.status_actor, delegate.email);
   const status = { provider: 'linkedin', status: 'applied', workspace: owner.id };
   assert.equal((await delegate.call('PATCH', '/me/gmail/jobs/123/status', status)).status, 200);
   assert.equal((await owner.call('GET', '/me/gmail/jobs')).body[0].status_actor, delegate.email);
