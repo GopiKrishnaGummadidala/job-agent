@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseLinkedInAlert } from '../src/gmail-alerts';
+import { parseAlert, parseLinkedInAlert } from '../src/gmail-alerts';
 
 test('LinkedIn alerts yield separate jobs with tracking stripped and repeated links merged', () => {
   const html = [
@@ -17,13 +17,33 @@ test('LinkedIn alerts yield separate jobs with tracking stripped and repeated li
   ]);
 });
 
-test('Indeed and Glassdoor alerts extract provider-specific job IDs', async () => {
-  const { parseAlert } = await import('../src/gmail-alerts.js');
+test('Indeed and Glassdoor alerts extract provider-specific job IDs', () => {
   const indeed = '<a href="https://de.indeed.com/rc/clk/dl?jk=abcdef1234567890">Software Engineer</a>';
   const glassdoor = '<a href="https://www.glassdoor.com/partner/jobListing.htm?jobListingId=12345">Developer</a>';
   assert.deepEqual(parseAlert(indeed + glassdoor, '', 'indeed').map(job => job.externalId), ['abcdef1234567890']);
   assert.deepEqual(parseAlert(indeed + glassdoor, '', 'glassdoor').map(job => job.externalId), ['12345']);
   assert.deepEqual(parseAlert('<a href="https://glassdoor.com.example.org/partner/jobListing.htm?jobListingId=1">Fake</a>', '', 'glassdoor'), []);
+});
+
+test('Indeed digest reads the employer paragraph before the location', () => {
+  const html = '<h2><a href="https://de.indeed.com/rc/clk/dl?jk=abcdef1234567890">Engineer</a></h2>'
+    + '</td></tr><tr><td><table><tr><td><p>Acme &amp; Co</p></td></tr>'
+    + '<tr><td><p>Hamburg</p></td></tr></table>';
+  assert.equal(parseAlert(html, '', 'indeed')[0].company, 'Acme & Co');
+});
+
+test('Glassdoor digest separates the rated employer from the title', () => {
+  const html = '<a href="https://www.glassdoor.com/partner/jobListing.htm?jobListingId=12345">'
+    + '<p>Acme&nbsp;4.2 ★</p><p>Senior Engineer</p><p>Hamburg</p></a>';
+  const [job] = parseAlert(html, '', 'glassdoor');
+  assert.equal(job.company, 'Acme');
+  assert.equal(job.title, 'Senior Engineer');
+});
+
+test('Glassdoor full cards can have an employer without a rating', () => {
+  const html = '<a href="https://www.glassdoor.com/partner/jobListing.htm?jobListingId=12345">'
+    + '<table><tr><td><p>Acme</p><p>Senior Engineer</p><p>Hamburg</p><p>6T</p></td></tr></table></a>';
+  assert.equal(parseAlert(html, '', 'glassdoor')[0].company, 'Acme');
 });
 
 test('employer labels stay with the corresponding job', () => {

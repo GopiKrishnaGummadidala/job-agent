@@ -52,12 +52,23 @@ export function parseAlert(html: string, plainText: string, provider: Provider):
   const collect = (href: string, label = '', company?: string) => {
     const externalId = jobId(href, provider);
     if (!externalId) return;
-    const text = htmlToText(label).replace(/\s+/g, ' ').trim();
+    const raw = htmlToText(label);
+    const lines = raw.split(/\r?\n/).map((line) => line.replace(/\s+/g, ' ').trim()).filter(Boolean);
+    // Glassdoor links wrap the full card, including a rated employer line and the title below it.
+    const ratedEmployer = provider === 'glassdoor' && lines.length >= 3
+      ? lines[0].match(/^(.+?)\s*\d[.,]\d\s*★$/)?.[1]?.trim()
+      : undefined;
+    const unratedEmployer = provider === 'glassdoor' && lines.length >= 4
+      && /<table\b/i.test(label) && /^(?:\d{1,3}\s*[a-z]{1,3}|30\+)$/i.test(lines.at(-1) ?? '')
+      ? lines[0]
+      : undefined;
+    const glassdoorEmployer = ratedEmployer || unratedEmployer;
+    const text = glassdoorEmployer ? lines[1] : raw.replace(/\s+/g, ' ').trim();
     const title = !text || /^(view|see|apply(?: now)?|view job|see job|view details|job details)$/i.test(text)
       ? null
       : text.slice(0, 250);
     const previous = jobs.get(externalId);
-    const employer = previous?.company ?? company;
+    const employer = previous?.company ?? company ?? glassdoorEmployer?.slice(0, 200);
     jobs.set(externalId, {
       externalId, url: jobLink(provider, externalId), title: previous?.title ?? title,
       ...(employer ? { company: employer } : {}),
@@ -77,7 +88,11 @@ export function parseAlert(html: string, plainText: string, provider: Provider):
       ? next.match(/^\s*(?:<\/?(?:td|tr|p|div|span)\b[^>]*>\s*){0,8}?<(p|div|span)\b[^>]*\bclass=["'][^"']*line-clamp-1[^"']*["'][^>]*>([\s\S]*?)<\/\1\s*>/i)?.[2]
       : undefined;
     const linkedInParts = linkedInLine?.split(/\s*(?:&middot;|&#183;|&#x0*b7;|[·•])\s*/i);
-    const source = employer ?? (linkedInParts && linkedInParts.length > 1 ? linkedInParts[0] : undefined);
+    // Indeed's digest nests the company and location in the first two paragraphs after the title heading.
+    const indeedLine = provider === 'indeed' && /^\s*<\/h2>/i.test(next)
+      ? next.match(/^\s*<\/h2>(?:\s*<[^>]+>){0,28}?\s*<p\b[^>]*>([^<>]+)<\/p>(?:\s*<[^>]+>){0,20}?\s*<p\b[^>]*>[^<>]+<\/p>/i)?.[1]
+      : undefined;
+    const source = employer ?? indeedLine ?? (linkedInParts && linkedInParts.length > 1 ? linkedInParts[0] : undefined);
     const company = source && htmlToText(source).replace(/\s+/g, ' ').trim().slice(0, 200);
     collect(quoted ?? singleQuoted ?? unquoted, label, company || undefined);
   }
