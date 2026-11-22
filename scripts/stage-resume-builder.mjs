@@ -9,15 +9,20 @@ if (!existsSync(resolve(source, 'index.html')) || !existsSync(resolve(source, 'j
 mkdirSync(target, { recursive: true });
 rmSync(resolve(target, 'js/profile.local.js'), { force: true });
 cpSync(resolve(source, 'index.html'), resolve(target, 'index.html'));
-for (const folder of ['css', 'js', 'fonts']) {
+function copyAssets(folder) {
   const destination = resolve(target, folder);
   mkdirSync(destination, { recursive: true });
   for (const entry of readdirSync(resolve(source, folder), { withFileTypes: true })) {
-    if (entry.isFile() && !entry.name.endsWith('.local.js') && /^[\w.-]+\.(css|js|woff2?|ttf|png|svg)$/i.test(entry.name)) {
+    if (entry.isDirectory() && /^fonts(?:\/|$)/.test(folder) && /^[\w-]+$/.test(entry.name)) {
+      copyAssets(folder + '/' + entry.name);
+    } else if (entry.isFile() && !entry.name.endsWith('.local.js')
+      && (/^[\w.-]+\.(css|js|woff2?|ttf|png|svg)$/i.test(entry.name)
+        || (folder.startsWith('fonts/') && entry.name === 'OFL.txt'))) {
       cpSync(resolve(source, folder, entry.name), resolve(destination, entry.name));
     }
   }
 }
+for (const folder of ['css', 'js', 'fonts']) copyAssets(folder);
 // Node loads the shared document validator as an ES module.
 writeFileSync(resolve(target, 'package.json'), '{"type":"module"}\n');
 console.log('Staged Resume Builder static assets.');
