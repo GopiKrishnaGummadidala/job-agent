@@ -11,7 +11,7 @@ export const providers = ['linkedin', 'indeed', 'glassdoor'] as const;
 export type Provider = typeof providers[number];
 
 export const alertSenders: Record<Provider, string> = {
-  linkedin: 'from:jobalerts-noreply@linkedin.com',
+  linkedin: '{from:jobalerts-noreply@linkedin.com from:jobs-noreply@linkedin.com}',
   indeed: '{from:indeed.com from:indeedmail.com}',
   glassdoor: 'from:glassdoor.com',
 };
