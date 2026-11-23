@@ -97,6 +97,34 @@ export class GmailController {
     return jobs.map((job) => ({ ...job, url: jobLink(provider, job.external_id) }));
   }
 
+  @Get('jobs/activity')
+  async activity(@UserId() userId: string, @Query('workspace') workspace: unknown) {
+    const owner = parse(z.uuid().optional(), workspace) ?? userId;
+    return this.db.asUser(userId, async (q) => {
+      const totals = await q(
+        'select status, count(*)::int as count from gmail_alert_jobs where user_id = $1 group by status',
+        [owner],
+      );
+      const daily = await q(
+        `with calendar as (
+           select (now() at time zone 'Europe/Berlin')::date - offset_days as day
+           from generate_series(0, 13) as offsets(offset_days)
+         ), applications as (
+           select (status_at at time zone 'Europe/Berlin')::date as day, count(*)::int as count
+           from gmail_alert_jobs
+           where user_id = $1 and status = 'applied'
+             and status_at >= ((select min(day) from calendar)::timestamp at time zone 'Europe/Berlin')
+           group by 1
+         )
+         select calendar.day::text as day, coalesce(applications.count, 0) as count
+         from calendar left join applications using (day)
+         order by calendar.day`,
+        [owner],
+      );
+      return { totals, daily };
+    });
+  }
+
   @Patch('jobs/:id/status')
   setJobStatus(@UserId() userId: string, @Param('id') id: string, @Body() input: unknown) {
     const { provider, status, workspace } = parse(z.object({

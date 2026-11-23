@@ -28,6 +28,7 @@ export function EmailManagementPage() {
     <>
       <PageHeader title="Email Management" subtitle="Import jobs from your unread Gmail alerts." />
       <WorkspaceAccess />
+      <JobActivity workspace={workspace} />
       <Paper variant="outlined" className="mb-4">
         <Tabs value={section.id} aria-label="Job alert sources" variant="scrollable" scrollButtons="auto">
           {sections.map((item) => (
@@ -46,6 +47,69 @@ function WorkspaceJobs({ section }: { section: typeof sections[number] }) {
   return <GmailJobs key={section.id + workspace} section={section} workspace={workspace} />;
 }
 
+const activityKey = (workspace: string) => ['gmail-job-activity', workspace];
+const dayLabel = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+
+function JobActivity({ workspace }: { workspace: string }) {
+  const activity = useQuery({
+    queryKey: activityKey(workspace),
+    queryFn: () => api<{
+      totals: { status: JobStatus; count: number }[];
+      daily: { day: string; count: number }[];
+    }>('/me/gmail/jobs/activity' + (workspace ? '?' + new URLSearchParams({ workspace }) : '')),
+    refetchInterval: 60_000,
+  });
+  const daily = activity.data?.daily ?? [];
+  const peak = Math.max(1, ...daily.map(({ count }) => count));
+
+  return (
+    <Paper variant="outlined" sx={{ mb: 2, p: 2 }}>
+      <Typography variant="h6" component="h2">Job activity</Typography>
+      <Typography variant="body2" color="text.secondary">
+        Across LinkedIn, Indeed and Glassdoor in this workspace
+      </Typography>
+      <ErrorAlert error={activity.error} />
+      {activity.isPending && <LoadingBlock />}
+      {activity.data && (
+        <>
+          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, 1fr)', sm: 'repeat(4, 1fr)' }, gap: 1, my: 2 }}>
+            {(Object.keys(statuses) as JobStatus[]).map((status) => (
+              <Box key={status} sx={{ border: 1, borderColor: 'divider', borderRadius: 2, p: 1.5 }}>
+                <Chip size="small" color={statusColors[status]} label={statuses[status]} />
+                <Typography variant="h5" sx={{ mt: 0.5 }}>
+                  {activity.data?.totals.find((total) => total.status === status)?.count ?? 0}
+                </Typography>
+              </Box>
+            ))}
+          </Box>
+          <Typography variant="subtitle1" component="h3">Applications per day</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+            Jobs currently marked Applied, grouped by the day they were marked over the last 14 days (Berlin time).
+          </Typography>
+          <Box sx={{ overflowX: 'auto' }}>
+            <Box component="ul" aria-label="Daily application counts" sx={{
+              display: 'grid', gridTemplateColumns: 'repeat(14, minmax(42px, 1fr))', gap: 0.5,
+              minWidth: 640, listStyle: 'none', m: 0, p: 0,
+            }}>
+              {daily.map(({ day, count }) => (
+                <Box component="li" key={day} sx={{ textAlign: 'center', minWidth: 0 }}>
+                  <Box sx={{ height: 100, display: 'flex', flexDirection: 'column', justifyContent: 'end', alignItems: 'center', borderBottom: 1, borderColor: 'divider' }}>
+                    <Typography variant="caption" sx={{ fontVariantNumeric: 'tabular-nums' }}>{count}</Typography>
+                    <Box aria-hidden="true" sx={{ width: '65%', maxWidth: 32, height: 76 * count / peak, bgcolor: 'success.main', borderRadius: '4px 4px 0 0' }} />
+                  </Box>
+                  <Typography component="span" variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
+                    {dayLabel.format(new Date(day))}
+                  </Typography>
+                </Box>
+              ))}
+            </Box>
+          </Box>
+        </>
+      )}
+    </Paper>
+  );
+}
+
 function GmailJobs({ section, workspace }: { section: typeof sections[number]; workspace: string }) {
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(10);
@@ -53,6 +117,10 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
   const filter = '?' + new URLSearchParams({ provider: section.id, ...(workspace ? { workspace } : {}) });
   const jobKey = ['gmail-jobs', section.id, workspace];
   const qc = useQueryClient();
+  const refreshJobs = () => Promise.all([
+    qc.invalidateQueries({ queryKey: jobKey }),
+    qc.invalidateQueries({ queryKey: activityKey(workspace) }),
+  ]);
   const connection = useQuery({
     queryKey: ['gmail'],
     queryFn: () => api<{ configured: boolean; connection: { email: string } | null }>('/me/gmail'),
@@ -65,7 +133,7 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
     mutationFn: () => api<{ alertsSaved: number; jobsAdded: number; unreadRetained: number; markedRead: number }>('/me/gmail/jobs/import' + filter, {
       method: 'POST',
     }),
-    onSettled: () => qc.invalidateQueries({ queryKey: jobKey }),
+    onSettled: refreshJobs,
   });
   const changeStatus = useMutation({
     mutationFn: ({ id, status }: { id: string; status: JobStatus }) =>
@@ -73,7 +141,7 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
         method: 'PATCH', json: { provider: section.id, status, ...(workspace ? { workspace } : {}) },
       }),
     scope: { id: 'gmail-job-status-' + section.id },
-    onSuccess: () => qc.invalidateQueries({ queryKey: jobKey }),
+    onSuccess: refreshJobs,
   });
   const rows = (jobs.data ?? []).filter((job) => statusFilter === 'all' || job.status === statusFilter);
   const currentPage = Math.min(page, Math.max(0, Math.ceil(rows.length / pageSize) - 1));
