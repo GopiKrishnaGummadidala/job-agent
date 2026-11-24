@@ -170,15 +170,26 @@ const inline = s => esc(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
 /** Letter body: blank line = new paragraph, a line starting with "# " = bold sub-heading. */
 export function letterBlocks(body) {
   const out = [];
-  let para = [];
-  const flush = () => { if (para.length) out.push(`<p>${para.map(inline).join('<br>')}</p>`); para = []; };
+  let para = [], items = [], kind = '', start = 1;
+  const flushPara = () => { if (para.length) out.push(`<p>${para.map(inline).join('<br>')}</p>`); para = []; };
+  const flushList = () => { if (items.length) out.push(`<${kind} class="l-letter-list"${kind === 'ol' ? ` start="${start}"` : ''}>${items.map(t => `<li>${inline(t)}</li>`).join('')}</${kind}>`); items = []; kind = ''; };
   (body || '').split('\n').forEach(raw => {
-    const line = raw.trim();
-    if (!line) return flush();
-    if (/^#{1,3}\s+/.test(line)) { flush(); out.push(`<h4 class="l-h">${inline(line.replace(/^#{1,3}\s+/, ''))}</h4>`); return; }
+    const line = raw.replace(/ +$/g, '');
+    if (!line.trim()) { flushPara(); return; }
+    const bullet = line.match(/^\s*(?:[-*•] |(\d+)[.)] )(.*)$/);
+    if (bullet) {
+      flushPara();
+      const type = bullet[1] ? 'ol' : 'ul';
+      if (kind && type !== kind) flushList();
+      if (!kind) { kind = type; start = Number(bullet[1]) || 1; }
+      items.push(bullet[2]);
+      return;
+    }
+    flushList();
+    if (/^#{1,3}\s+/.test(line)) { flushPara(); out.push(`<h4 class="l-h">${inline(line.replace(/^#{1,3}\s+/, ''))}</h4>`); return; }
     para.push(line);
   });
-  flush();
+  flushPara(); flushList();
   return out.join('');
 }
 

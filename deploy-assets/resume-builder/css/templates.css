@@ -534,3 +534,8 @@ ul.l-lines > li:only-child:empty::before { content: 'Achievement: what you did a
 /* Keep visible air between skill chips, including the first-page fitting mode. */
 .tpl-signature.skills-compact [data-sec="skills"] .r-chips { gap: 5pt 6pt; }
 .tpl-signature.skills-compact [data-sec="skills"] .r-chips span { padding: 2pt 5pt; line-height: 12pt; }
+
+/* Keep letter indentation and pasted lists in the editor, preview and PDF layout. */
+.l-body p, .l-banner p, .l-edit p, .l-edit > div, .l-letter-list li { white-space: pre-wrap; tab-size: 4; }
+.l-letter-list { padding-left: 1.6em; margin: 0 0 12px; }
+.l-letter-list li { margin: 0 0 3px; }

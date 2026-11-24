@@ -555,6 +555,14 @@ export function mountEditor() {
     toast('Pasted with bold text kept');
   });
   root.addEventListener('keydown', e => {
+    if (e.key === 'Tab' && !e.shiftKey && (e.target === bodyBox() || e.target.closest?.('.l-edit'))) {
+      e.preventDefault();
+      if (e.target === bodyBox()) {
+        e.target.setRangeText('\t', e.target.selectionStart, e.target.selectionEnd, 'end');
+        e.target.dispatchEvent(new Event('input', { bubbles: true }));
+      } else document.execCommand('insertText', false, '\t');
+      return;
+    }
     if (e.target === bodyBox() && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
       e.preventDefault();
       toggleBold(e.target);

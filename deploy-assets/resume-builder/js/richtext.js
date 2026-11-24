@@ -13,19 +13,26 @@ function boldOf(el, inherited) {
 }
 
 /** Walk a DOM tree into blocks of text runs: [{ parts: [{t, bold}], heading }]. */
-function collectBlocks(rootNode) {
+function collectBlocks(rootNode, letter = false) {
+  let listPrefix = "";
   const blocks = [];
   let cur = null;
-  const open = () => { if (!cur) { cur = { parts: [], heading: false }; blocks.push(cur); } return cur; };
+  const open = () => { if (!cur) { cur = { parts: [], heading: false, listPrefix }; blocks.push(cur); } return cur; };
   const close = () => { cur = null; };
   const walk = (node, bold) => {
     if (node.nodeType === Node.TEXT_NODE) {
-      const t = node.nodeValue.replace(/\s+/g, ' ');
-      if (t.trim() || (cur && t)) open().parts.push({ t, bold });
+      const t = letter ? node.nodeValue.replace(/\r?\n/g, ' ').replace(/\u00a0/g, ' ') : node.nodeValue.replace(/\s+/g, ' ');
+      if (t.trim() || (cur && t) || (letter && t.includes('\t'))) open().parts.push({ t, bold });
       return;
     }
     if (node.nodeType !== Node.ELEMENT_NODE || SKIP.has(node.tagName)) return;
     const tag = node.tagName;
+    const previousPrefix = listPrefix;
+    if (letter && tag === 'LI') {
+      const parent = node.parentElement;
+      const index = [...parent.children].filter(c => c.tagName === 'LI').indexOf(node);
+      listPrefix = parent.tagName === 'OL' ? `${(Number(parent.getAttribute('start')) || 1) + index}. ` : '- ';
+    }
     if (tag === 'BR') { if (cur) cur.parts.push({ t: '\n', bold: false }); return; }
     const heading = /^H[1-6]$/.test(tag);
     const b = heading ? false : boldOf(node, bold);
@@ -33,6 +40,7 @@ function collectBlocks(rootNode) {
     if (heading) open().heading = true;
     node.childNodes.forEach(c => walk(c, b));
     if (BLOCK.has(tag)) close();
+    listPrefix = previousPrefix;
   };
   rootNode.childNodes.forEach(c => walk(c, false));
   return blocks;
@@ -41,13 +49,14 @@ function collectBlocks(rootNode) {
 const tidy = s => s.replace(/[ \t]+/g, ' ').replace(/ *\n */g, '\n').trim();
 
 /** One block's text with bold runs wrapped in ** (surrounding spaces kept outside the markers). */
-function blockMarkup(blk) {
+function blockMarkup(blk, letter = false) {
   const runs = [];
   blk.parts.forEach(p => {
     const last = runs[runs.length - 1];
     if (last && last.bold === p.bold) last.t += p.t; else runs.push({ ...p });
   });
-  return tidy(runs.map(r => {
+  const clean = letter ? s => s.replace(/^ +| +$/g, '') : tidy;
+  return clean(runs.map(r => {
     if (!r.bold || !r.t.trim()) return r.t;
     const lead = r.t.match(/^\s*/)[0], trail = r.t.match(/\s*$/)[0];
     return `${lead}**${r.t.trim()}**${trail}`;
@@ -60,18 +69,19 @@ const joinBlocks = lines => lines.reduce((acc, line, i) => acc + (i === 0 ? '' :
 /** Convert pasted HTML into body markup. Returns null when the HTML carries no bold or headings worth keeping. */
 export function htmlToLetterText(html) {
   const doc = new DOMParser().parseFromString(html, 'text/html');
-  const blocks = collectBlocks(doc.body);
+  const blocks = collectBlocks(doc.body, true);
   let found = false;
   const out = [];
   for (const blk of blocks) {
     const visible = blk.parts.filter(p => p.t.trim());
     if (!visible.length) continue;
-    if (blk.heading || visible.some(p => p.bold)) found = true;
+    if (blk.listPrefix || blk.parts.some(p => p.t.includes('\t')) || blk.heading || visible.some(p => p.bold)) found = true;
     const allBold = visible.every(p => p.bold);
     const plain = tidy(blk.parts.map(p => p.t).join(''));
     // A short, fully-bold paragraph reads as a sub-heading, like in a formatted cover letter.
-    if (blk.heading || (allBold && plain.length <= 90 && !plain.includes('\n') && !/[.!?:]$/.test(plain))) out.push(`# ${plain}`);
-    else out.push(blockMarkup(blk));
+    if (blk.listPrefix) out.push(blk.listPrefix + blockMarkup(blk, true));
+    else if (blk.heading || (allBold && plain.length <= 90 && !plain.includes('\n') && !/[.!?:]$/.test(plain))) out.push(`# ${plain}`);
+    else out.push(blockMarkup(blk, true));
   }
   return found ? joinBlocks(out) : null;
 }
@@ -79,9 +89,9 @@ export function htmlToLetterText(html) {
 /** Convert the in-page editor's DOM back to body markup (exact: no heading guessing). */
 export function editableToLetterText(el) {
   const out = [];
-  for (const blk of collectBlocks(el)) {
+  for (const blk of collectBlocks(el, true)) {
     if (!blk.parts.some(p => p.t.trim())) continue;
-    out.push(blk.heading ? `# ${tidy(blk.parts.map(p => p.t).join('')).replace(/\n/g, ' ')}` : blockMarkup(blk));
+    out.push(blk.heading ? `# ${tidy(blk.parts.map(p => p.t).join('')).replace(/\n/g, ' ')}` : (blk.listPrefix || '') + blockMarkup(blk, true));
   }
   return joinBlocks(out);
 }
