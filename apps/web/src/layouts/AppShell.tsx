@@ -98,14 +98,14 @@ export function AppShell({ email }: { email: string }) {
             </ListItemButton>
           );
         })}
+        {workspaceAccess.data?.resumeBuilder && (
+          <ListItemButton component="a" href={'/resume-builder/' + builderWorkspace + '/'} target="_blank"
+            rel="noopener noreferrer" onClick={() => setOpen(false)} sx={{ borderRadius: 2, mb: 0.5 }}>
+            <ListItemIcon sx={{ minWidth: 36 }}><FileText size={20} aria-hidden /></ListItemIcon>
+            <ListItemText primary="Resume Builder" slotProps={{ primary: { variant: 'body2' } }} />
+          </ListItemButton>
+        )}
       </List>
-      {workspaceAccess.data?.resumeBuilder && (
-        <ListItemButton component="a" href={'/resume-builder/' + builderWorkspace + '/'} target="_blank"
-          rel="noopener noreferrer" sx={{ mx: 2, mb: 1, borderRadius: 2 }}>
-          <ListItemIcon sx={{ minWidth: 36 }}><FileText size={20} aria-hidden /></ListItemIcon>
-          <ListItemText primary="Resume Builder" />
-        </ListItemButton>
-      )}
       <Box className="px-4 pb-4">
         <Typography variant="caption" color="text.secondary" noWrap component="div">
           {email}
