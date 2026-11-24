@@ -10,6 +10,15 @@ import { audit, Db } from './db';
 import { alertSenders, jobLink, parseAlert, providers } from './gmail-alerts';
 
 const scope = 'https://www.googleapis.com/auth/gmail.modify';
+const trackedProviders = [...providers, 'manual'] as const;
+const manualJobInput = z.object({
+  workspace: z.uuid().optional(),
+  url: z.string().trim().max(2048).pipe(z.url({ protocol: /^https?$/ })).transform((value) => new URL(value))
+    .refine((url) => !url.username && !url.password, 'Use a link without embedded credentials.')
+    .transform((url) => url.href),
+  title: z.string().trim().min(1).max(250),
+  company: z.string().trim().max(150).optional(),
+});
 const sha256 = (value: string) => createHash('sha256').update(value).digest('base64url');
 
 function gmailConfig() {
@@ -86,15 +95,61 @@ export class GmailController {
 
   @Get('jobs')
   async jobs(@UserId() userId: string, @Query('provider') value: unknown, @Query('workspace') workspace: unknown) {
-    const provider = parse(z.enum(providers).default('linkedin'), value);
+    const provider = parse(z.enum(trackedProviders).default('linkedin'), value);
     const owner = parse(z.uuid().optional(), workspace) ?? userId;
     const jobs = await this.db.asUser(userId, (q) => q(
-      `select j.external_id, j.title, j.company, j.received_at, j.status, j.status_at, u.email as status_actor
+      `select j.external_id, j.title, j.company, j.received_at, j.status, j.status_at, j.manual_url, u.email as status_actor,
+         coalesce((select jsonb_agg(jsonb_build_object('email', viewer.email, 'viewed_at', v.viewed_at)
+                                   order by v.viewed_at desc, v.viewer_id)
+                   from gmail_job_views v join users viewer on viewer.id = v.viewer_id
+                   where (v.user_id, v.provider, v.external_id) = (j.user_id, j.provider, j.external_id)),
+                  '[]'::jsonb) as viewers
        from gmail_alert_jobs j left join users u on u.id = j.status_actor_id
        where j.provider = $1 and j.user_id = $2 order by j.received_at desc, j.external_id`,
       [provider, owner],
     ));
-    return jobs.map((job) => ({ ...job, url: jobLink(provider, job.external_id) }));
+    return jobs.map(({ manual_url, ...job }) => ({
+      ...job,
+      url: provider === 'manual' ? manual_url : jobLink(provider, job.external_id),
+    }));
+  }
+
+  @Post('jobs/manual')
+  async addManualJob(@UserId() userId: string, @Body() input: unknown) {
+    const { workspace, url, title, company } = parse(manualJobInput, input);
+    const owner = workspace ?? userId;
+    const [job] = await this.db.asUser(userId, async (q) => {
+      if (owner !== userId) {
+        const [access] = await q('select 1 from workspace_delegates where owner_id = $1 and delegate_id = $2', [owner, userId]);
+        if (!access) throw new NotFoundException('Workspace not found.');
+      }
+      return q(
+        `insert into gmail_alert_jobs (user_id, provider, external_id, title, company, received_at, manual_url)
+         values ($1, 'manual', gen_random_uuid()::text, $2, $3, now(), $4)
+         on conflict (user_id, manual_url) where provider = 'manual' do nothing
+         returning external_id`,
+        [owner, title, company || null, url],
+      );
+    });
+    if (!job) throw new ConflictException('This job link is already saved.');
+    return job;
+  }
+
+  @Patch('jobs/manual/:id')
+  async editManualJob(@UserId() userId: string, @Param('id') id: string, @Body() input: unknown) {
+    const { workspace, url, title, company } = parse(manualJobInput, input);
+    try {
+      const [job] = await this.db.asUser(userId, (q) => q(
+        `update gmail_alert_jobs set title = $3, company = $4, manual_url = $5
+         where user_id = $1 and provider = 'manual' and external_id = $2 returning external_id`,
+        [workspace ?? userId, id, title, company || null, url],
+      ));
+      if (!job) throw new NotFoundException('Saved job not found.');
+      return job;
+    } catch (error) {
+      if ((error as { code?: string }).code === '23505') throw new ConflictException('This job link is already saved.');
+      throw error;
+    }
   }
 
   @Get('jobs/activity')
@@ -128,7 +183,7 @@ export class GmailController {
   @Patch('jobs/:id/status')
   setJobStatus(@UserId() userId: string, @Param('id') id: string, @Body() input: unknown) {
     const { provider, status, workspace } = parse(z.object({
-      provider: z.enum(providers),
+      provider: z.enum(trackedProviders),
       status: z.enum(['pending', 'viewed', 'applied', 'unfit']),
       workspace: z.uuid().optional(),
     }), input);
@@ -142,6 +197,15 @@ export class GmailController {
         [provider, id, status, workspace ?? userId, userId],
       );
       if (!job) throw new NotFoundException('Imported job not found.');
+      if (status === 'viewed') {
+        await q(
+          `insert into gmail_job_views (user_id, provider, external_id, viewer_id)
+           values ($1, $2, $3, $4)
+           on conflict (user_id, provider, external_id, viewer_id)
+           do update set viewed_at = greatest(gmail_job_views.viewed_at, excluded.viewed_at)`,
+          [workspace ?? userId, provider, id, userId],
+        );
+      }
       return job;
     });
   }

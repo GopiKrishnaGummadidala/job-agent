@@ -1,5 +1,5 @@
 import {
-  Alert, Box, Button, Chip, MenuItem, Paper, Tab, Table, TableBody, TableCell, TableContainer, TextField,
+  Alert, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, MenuItem, Paper, Tab, Table, TableBody, TableCell, TableContainer, TextField,
   TableHead, TablePagination, TableRow, Tabs, Typography,
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -14,10 +14,12 @@ const sections = [
   { id: 'linkedin', label: 'LinkedIn' },
   { id: 'indeed', label: 'Indeed' },
   { id: 'glassdoor', label: 'Glassdoor' },
+  { id: 'manual', label: 'Saved Links' },
 ];
 const statuses = { pending: 'Pending', viewed: 'Viewed', applied: 'Applied', unfit: 'Unfit' } as const;
 const statusColors = { pending: 'default', viewed: 'info', applied: 'success', unfit: 'warning' } as const;
 type JobStatus = keyof typeof statuses;
+type JobLinkForm = { id?: string; url: string; title: string; company: string };
 
 export function EmailManagementPage() {
   const { provider } = useParams();
@@ -26,11 +28,11 @@ export function EmailManagementPage() {
   if (!section) return <Navigate to="/email/linkedin" replace />;
   return (
     <>
-      <PageHeader title="Email Management" subtitle="Import jobs from your unread Gmail alerts." />
+      <PageHeader title="Email Management" subtitle="Import Gmail job alerts and track your saved job links." />
       <WorkspaceAccess />
       <JobActivity workspace={workspace} />
       <Paper variant="outlined" className="mb-4">
-        <Tabs value={section.id} aria-label="Job alert sources" variant="scrollable" scrollButtons="auto">
+        <Tabs value={section.id} aria-label="Job sources" variant="scrollable" scrollButtons="auto">
           {sections.map((item) => (
             <Tab key={item.id} value={item.id} label={item.label} component={RouterLink}
               to={'/email/' + item.id + (workspace ? '?' + new URLSearchParams({ workspace }) : '')} />
@@ -66,7 +68,7 @@ function JobActivity({ workspace }: { workspace: string }) {
     <Paper variant="outlined" sx={{ mb: 2, p: 2 }}>
       <Typography variant="h6" component="h2">Job activity</Typography>
       <Typography variant="body2" color="text.secondary">
-        Across LinkedIn, Indeed and Glassdoor in this workspace
+        Across job alerts and saved links in this workspace
       </Typography>
       <ErrorAlert error={activity.error} />
       {activity.isPending && <LoadingBlock />}
@@ -114,6 +116,8 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(10);
   const [statusFilter, setStatusFilter] = useState('all');
+  const [form, setForm] = useState<JobLinkForm | null>(null);
+  const manual = section.id === 'manual';
   const filter = '?' + new URLSearchParams({ provider: section.id, ...(workspace ? { workspace } : {}) });
   const jobKey = ['gmail-jobs', section.id, workspace];
   const qc = useQueryClient();
@@ -123,11 +127,16 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
   ]);
   const connection = useQuery({
     queryKey: ['gmail'],
+    enabled: !manual,
     queryFn: () => api<{ configured: boolean; connection: { email: string } | null }>('/me/gmail'),
   });
   const jobs = useQuery({
     queryKey: jobKey,
-    queryFn: () => api<{ external_id: string; title: string | null; company: string | null; received_at: string; url: string; status: JobStatus; status_at?: string; status_actor?: string }[]>('/me/gmail/jobs' + filter),
+    queryFn: () => api<{
+      external_id: string; title: string | null; company: string | null; received_at: string; url: string;
+      status: JobStatus; status_at?: string; status_actor?: string;
+      viewers: { email: string; viewed_at: string }[];
+    }[]>('/me/gmail/jobs' + filter),
   });
   const run = useMutation({
     mutationFn: () => api<{ alertsSaved: number; jobsAdded: number; unreadRetained: number; markedRead: number }>('/me/gmail/jobs/import' + filter, {
@@ -143,13 +152,34 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
     scope: { id: 'gmail-job-status-' + section.id },
     onSuccess: refreshJobs,
   });
+  const saveLink = useMutation({
+    mutationFn: ({ id, ...details }: JobLinkForm) =>
+      api('/me/gmail/jobs/manual' + (id ? '/' + encodeURIComponent(id) : ''), {
+        method: id ? 'PATCH' : 'POST',
+        json: { ...details, ...(workspace ? { workspace } : {}) },
+      }),
+    onSuccess: async (_job, fields) => {
+      setForm(null);
+      if (!fields.id) {
+        setPage(0);
+        setStatusFilter('all');
+      }
+      await refreshJobs();
+    },
+  });
+  const openForm = (fields: JobLinkForm) => {
+    saveLink.reset();
+    setForm(fields);
+  };
   const rows = (jobs.data ?? []).filter((job) => statusFilter === 'all' || job.status === statusFilter);
   const currentPage = Math.min(page, Math.max(0, Math.ceil(rows.length / pageSize) - 1));
   return (
     <Paper variant="outlined" sx={{ overflow: 'hidden' }}>
       <Box className="flex flex-wrap items-center justify-between gap-2 p-4">
-        <Typography variant="h6" component="h2">{section.label} jobs</Typography>
-        {!workspace && (connection.data?.connection && connection.data.configured ? (
+        <Typography variant="h6" component="h2">{manual ? 'Saved job links' : section.label + ' jobs'}</Typography>
+        {manual ? (
+          <Button variant="contained" onClick={() => openForm({ url: '', title: '', company: '' })}>Add job link</Button>
+        ) : !workspace && (connection.data?.connection && connection.data.configured ? (
           <Button variant="outlined" onClick={() => run.mutate()} disabled={run.isPending}>
             {run.isPending ? 'Importing…' : 'Import unread alerts'}
           </Button>
@@ -157,6 +187,26 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
           <Button component={RouterLink} to="/settings">Gmail settings</Button>
         ))}
       </Box>
+      {form && (
+        <Dialog open fullWidth maxWidth="sm" onClose={() => { if (!saveLink.isPending) setForm(null); }}>
+          <Box component="form" onSubmit={(event) => { event.preventDefault(); saveLink.mutate(form); }}>
+            <DialogTitle>{form.id ? 'Edit job link' : 'Add job link'}</DialogTitle>
+            <DialogContent sx={{ display: 'grid', gap: 2, pt: '12px !important' }}>
+              <TextField autoFocus required label="Job URL" type="url" value={form.url} disabled={saveLink.isPending}
+                onChange={(event) => setForm({ ...form, url: event.target.value })} />
+              <TextField required label="Job title" value={form.title} disabled={saveLink.isPending}
+                onChange={(event) => setForm({ ...form, title: event.target.value })} />
+              <TextField label="Company" value={form.company} disabled={saveLink.isPending}
+                onChange={(event) => setForm({ ...form, company: event.target.value })} />
+              <ErrorAlert error={saveLink.error} />
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setForm(null)} disabled={saveLink.isPending}>Cancel</Button>
+              <Button type="submit" variant="contained" disabled={saveLink.isPending}>Save job</Button>
+            </DialogActions>
+          </Box>
+        </Dialog>
+      )}
       <Box sx={{ px: 2, pb: 2 }}>
         <TextField select size="small" label="Filter by status" value={statusFilter} sx={{ minWidth: 155 }}
           onChange={(event) => { setStatusFilter(event.target.value); setPage(0); }}>
@@ -175,7 +225,7 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
       {jobs.isLoading && <LoadingBlock rows={2} />}
       {jobs.data?.length === 0 && (
         <Typography variant="body2" color="text.secondary" sx={{ px: 2, pb: 2 }}>
-          No {section.label} jobs imported yet.
+          {manual ? 'No job links saved yet.' : 'No ' + section.label + ' jobs imported yet.'}
         </Typography>
       )}
       {!!jobs.data?.length && rows.length === 0 && (
@@ -184,11 +234,11 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
       {rows.length > 0 && (
         <>
           <TableContainer sx={{ borderTop: 1, borderColor: 'divider' }}>
-            <Table size="small" aria-label={section.label + ' imported jobs'}>
+            <Table size="small" aria-label={manual ? 'Saved job links' : section.label + ' imported jobs'}>
               <TableHead sx={{ bgcolor: 'action.hover' }}>
                 <TableRow>
                   <TableCell sx={{ fontWeight: 700 }}>Job title</TableCell>
-                  <TableCell sx={{ fontWeight: 700, display: { xs: 'none', sm: 'table-cell' } }}>Alert received</TableCell>
+                  <TableCell sx={{ fontWeight: 700, display: { xs: 'none', sm: 'table-cell' } }}>{manual ? 'Date added' : 'Alert received'}</TableCell>
                   <TableCell sx={{ fontWeight: 700 }}>Status</TableCell>
                   <TableCell align="right" sx={{ fontWeight: 700 }}>Action</TableCell>
                 </TableRow>
@@ -202,6 +252,16 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
                       <Typography variant="caption" color="text.secondary" sx={{ display: { xs: 'block', sm: 'none' } }}>
                         {fmtDateTime(job.received_at)}
                       </Typography>
+                      {job.viewers?.length > 0 && (
+                        <Box sx={{ mt: 0.5 }}>
+                          <Typography variant="caption" sx={{ fontWeight: 600 }}>Viewed by</Typography>
+                          {job.viewers.map(({ email, viewed_at }) => (
+                            <Typography key={email} variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                              {email} · {fmtDateTime(viewed_at)}
+                            </Typography>
+                          ))}
+                        </Box>
+                      )}
                     </TableCell>
                     <TableCell sx={{ whiteSpace: 'nowrap', display: { xs: 'none', sm: 'table-cell' } }}>
                       {fmtDateTime(job.received_at)}
@@ -217,12 +277,18 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
                     <TableCell align="right">
                       <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 0.5 }}>
                         <Button size="small" href={job.url} target="_blank" rel="noopener noreferrer"
-                          onClick={() => {
-                            if (job.status === 'pending') changeStatus.mutate({ id: job.external_id, status: 'viewed' });
+                          onClick={() => changeStatus.mutate({ id: job.external_id, status: 'viewed' })}
+                          onAuxClick={(event) => {
+                            if (event.button === 1) changeStatus.mutate({ id: job.external_id, status: 'viewed' });
                           }}
                           endIcon={<ExternalLink size={14} />} sx={{ whiteSpace: 'nowrap' }}>
                           Open job
                         </Button>
+                        {manual && (
+                          <Button size="small" onClick={() => openForm({
+                            id: job.external_id, url: job.url, title: job.title ?? '', company: job.company ?? '',
+                          })}>Edit</Button>
+                        )}
                         {job.status !== 'applied' && (
                           <Button size="small" onClick={() => changeStatus.mutate({ id: job.external_id, status: 'applied' })}>
                             Mark as applied

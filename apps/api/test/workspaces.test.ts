@@ -6,6 +6,28 @@ const h = new Harness();
 before(() => h.start());
 after(() => h.stop());
 
+test('saved links can be edited only by users with workspace access', async () => {
+  const owner = await h.user();
+  const outsider = await h.user();
+  const route = '/me/gmail/jobs/manual';
+  const job = { url: 'https://example.test/jobs/123', title: 'Engineer' };
+  assert.equal((await owner.call('POST', route, { ...job, url: 'javascript:alert(1)' })).status, 400);
+  const created = await owner.call('POST', route, job);
+  assert.equal(created.status, 201);
+  assert.equal((await owner.call('POST', route, job)).status, 409);
+
+  const editRoute = route + '/' + created.body.external_id;
+  const edited = { url: 'https://example.test/jobs/456', title: 'Senior Engineer', company: 'Example' };
+  assert.equal((await outsider.call('PATCH', editRoute, { ...edited, workspace: owner.id })).status, 404);
+  assert.equal((await outsider.call('POST', route, { ...edited, workspace: owner.id })).status, 404);
+  assert.equal((await owner.call('PATCH', editRoute, edited)).status, 200);
+  const [saved] = (await owner.call('GET', '/me/gmail/jobs?provider=manual')).body;
+  assert.equal(saved.url, edited.url);
+  assert.equal(saved.title, edited.title);
+  assert.equal(saved.company, edited.company);
+  assert.equal(saved.status, 'pending');
+});
+
 test('an invitation grants access to shared Gmail jobs and resumes until revoked', async () => {
   const owner = await h.user();
   const delegate = await h.user();
@@ -40,6 +62,15 @@ test('an invitation grants access to shared Gmail jobs and resumes until revoked
   const status = { provider: 'linkedin', status: 'applied', workspace: owner.id };
   assert.equal((await delegate.call('PATCH', '/me/gmail/jobs/123/status', status)).status, 200);
   assert.equal((await owner.call('GET', '/me/gmail/jobs')).body[0].status_actor, delegate.email);
+  for (const viewer of [owner, delegate, delegate]) {
+    const opened = await viewer.call('PATCH', '/me/gmail/jobs/123/status', { ...status, status: 'viewed' });
+    assert.equal(opened.body.status, 'applied');
+  }
+  const [viewedJob] = (await delegate.call('GET', jobs)).body;
+  assert.equal(viewedJob.status_actor, delegate.email);
+  assert.deepEqual(viewedJob.viewers.map((view: { email: string }) => view.email).sort(),
+    [owner.email, delegate.email].sort());
+  assert.ok(viewedJob.viewers.every((view: { viewed_at: string }) => Number.isFinite(Date.parse(view.viewed_at))));
   await h.owner.query(
     "insert into gmail_alert_jobs (user_id, provider, external_id, received_at) values ($1, 'indeed', '456', now())",
     [owner.id],
