@@ -256,6 +256,7 @@ export async function buildPdf(doc, area, { title = '', ...overrides } = {}) {
 
 /** Suggested file name (without extension) for a document. */
 export function pdfName(doc) {
+  if (doc.type !== 'cover') return 'CV';
   const cover = doc.type === 'cover';
   const named = doc.title && doc.title !== LETTER_TITLE; // a letter is named after its recipient, or by the user
   const base = cover && named ? doc.title
