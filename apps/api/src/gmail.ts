@@ -8,7 +8,7 @@ import { AuthGuard, parse, UserId } from './auth';
 import { config } from './config';
 import { audit, Db } from './db';
 import { alertSenders, jobLink, parseAlert, providers } from './gmail-alerts';
-import { companyFromSender, responseOutcome, senderAddress } from './interview-responses';
+import { companyFromSender, responseOutcome, senderAddress, workableInterview } from './interview-responses';
 
 const scope = 'https://www.googleapis.com/auth/gmail.modify';
 const trackedProviders = [...providers, 'manual'] as const;
@@ -259,17 +259,23 @@ export class GmailController {
     for (const row of rows) {
       const address = senderAddress(row.sender);
       if (!address.endsWith('@inbound.workablemail.com')) continue;
-      const company = row.company.trim();
-      if (!company || /^(?:workable|recruiting|talent acquisition|no.?reply|hiring team)$/i.test(company)) continue;
+      const company = workableInterview(row.subject)?.company;
+      if (!company) continue;
       const names = workableCompanies.get(address) ?? new Set<string>();
       names.add(company);
       workableCompanies.set(address, names);
     }
     return rows.map((row) => {
-      const names = workableCompanies.get(senderAddress(row.sender));
+      const address = senderAddress(row.sender);
+      const details = address.endsWith('@inbound.workablemail.com') ? workableInterview(row.subject) : null;
+      const names = workableCompanies.get(address);
+      const originalName = row.sender.match(/^(.+?)\s*<[^>]+>$/)?.[1].replace(/^"|"$/g, '').slice(0, 200);
+      const inferredCompany = details?.company ?? (names?.size === 1 ? [...names][0] : undefined);
+      const canInfer = !row.company || row.company === originalName || row.company === companyFromSender(row.sender);
       return {
         ...row,
-        company: names?.size === 1 ? [...names][0] : row.company,
+        company: canInfer ? inferredCompany ?? row.company : row.company,
+        job_title: row.job_title || details?.jobTitle || '',
         outcome: responseOutcome(row.subject) === 'unrelated'
           ? 'unrelated'
           : row.outcome === 'review' ? responseOutcome(row.subject) : row.outcome,
