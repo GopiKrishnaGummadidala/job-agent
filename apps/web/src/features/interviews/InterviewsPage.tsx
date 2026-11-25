@@ -15,7 +15,7 @@ const queryKey = ['private-interviews'];
 export function InterviewsPage() {
   const qc = useQueryClient();
   const [form, setForm] = useState<Interview | null>(null);
-  const [filter, setFilter] = useState('all');
+  const [filter, setFilter] = useState('advancing');
   const [cursor, setCursor] = useState<string>();
   const [added, setAdded] = useState<number>();
   const interviews = useQuery({
@@ -46,7 +46,18 @@ export function InterviewsPage() {
       await qc.invalidateQueries({ queryKey });
     },
   });
-  const rows = (interviews.data ?? []).filter(({ outcome }) => filter === 'all' ? outcome !== 'unrelated' : outcome === filter);
+  const rows = (interviews.data ?? []).filter(({ outcome }) => {
+    if (filter === 'advancing') return outcome === 'positive' || outcome === 'scheduled' || outcome === 'offer';
+    return filter === 'all' ? outcome !== 'unrelated' : outcome === filter;
+  });
+  const companies = new Map<string, { name: string; replies: Interview[] }>();
+  for (const row of rows) {
+    const name = row.company.trim() || 'Company unknown';
+    const key = name.toLowerCase();
+    const group = companies.get(key) ?? { name, replies: [] };
+    group.replies.push(row);
+    companies.set(key, group);
+  }
 
   return (
     <>
@@ -62,17 +73,21 @@ export function InterviewsPage() {
         <ErrorAlert error={interviews.error ?? scan.error} />
         {added !== undefined && <Typography role="status">{added} new messages imported{scan.isPending ? ' so far' : ''}.</Typography>}
         <TextField select size="small" label="Outcome" value={filter} onChange={(e) => setFilter(e.target.value)} sx={{ width: 220 }}>
+          <MenuItem value="advancing">Invitations and offers</MenuItem>
           <MenuItem value="all">All relevant responses</MenuItem>
           {Object.entries(outcomes).map(([value, label]) => <MenuItem key={value} value={value}>{label}</MenuItem>)}
         </TextField>
         {interviews.isPending && <LoadingBlock />}
         {interviews.isSuccess && !rows.length && <Typography color="text.secondary">No responses match this view.</Typography>}
-        {rows.map((row) => (
+        {[...companies.values()].map(({ name, replies }) => (
+          <Box component="section" key={name}>
+            <Typography component="h2" variant="h6" sx={{ mb: 1 }}>{name}</Typography>
+            <Stack spacing={1}>
+            {replies.map((row) => (
           <Paper key={row.message_id} variant="outlined" sx={{ p: 2, overflowWrap: 'anywhere' }}>
             <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ justifyContent: 'space-between' }}>
               <Box>
-                <Typography component="h2" variant="subtitle1">{row.job_title || row.subject || 'Recruiting response'}</Typography>
-                {row.company && <Typography variant="body2">{row.company}</Typography>}
+                <Typography component="h3" variant="subtitle1">{row.job_title || row.subject || 'Recruiting response'}</Typography>
                 {row.job_title && <Typography variant="body2" color="text.secondary">{row.subject}</Typography>}
                 <Typography variant="caption" color="text.secondary">{row.sender} · {fmtDateTime(row.received_at)}</Typography>
               </Box>
@@ -87,6 +102,9 @@ export function InterviewsPage() {
               <Chip size="small" variant="outlined" label={stages[row.stage]} />
             </Stack>
           </Paper>
+            ))}
+            </Stack>
+          </Box>
         ))}
       </Stack>
       {form && (

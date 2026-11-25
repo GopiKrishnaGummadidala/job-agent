@@ -8,6 +8,7 @@ import { AuthGuard, parse, UserId } from './auth';
 import { config } from './config';
 import { audit, Db } from './db';
 import { alertSenders, jobLink, parseAlert, providers } from './gmail-alerts';
+import { companyFromSender, responseOutcome, senderAddress } from './interview-responses';
 
 const scope = 'https://www.googleapis.com/auth/gmail.modify';
 const trackedProviders = [...providers, 'manual'] as const;
@@ -24,6 +25,7 @@ const responseSearch = [
   'subject:interview', 'subject:Einladung', 'subject:Vorstellungsgespräch', 'subject:Kennenlerngespräch',
   'subject:Bewerbung', 'subject:Absage', 'subject:"your application"', 'subject:"application update"',
   'subject:"next steps"', 'subject:"job offer"',
+  'from:4f54m_ff28rt@inbound.workablemail.com',
 ].join(' ');
 const interviewFields = z.object({
   company: z.string().trim().max(200),
@@ -248,11 +250,31 @@ export class GmailController {
   }
 
   @Get('interviews')
-  interviews(@UserId() userId: string) {
-    return this.db.asUser(userId, (q) => q(
+  async interviews(@UserId() userId: string) {
+    const rows = await this.db.asUser(userId, (q) => q(
       `select message_id, subject, sender, received_at, company, job_title, stage, outcome
        from private_interviews where user_id = $1 order by received_at desc, message_id`, [userId],
     ));
+    const workableCompanies = new Map<string, Set<string>>();
+    for (const row of rows) {
+      const address = senderAddress(row.sender);
+      if (!address.endsWith('@inbound.workablemail.com')) continue;
+      const company = row.company.trim();
+      if (!company || /^(?:workable|recruiting|talent acquisition|no.?reply|hiring team)$/i.test(company)) continue;
+      const names = workableCompanies.get(address) ?? new Set<string>();
+      names.add(company);
+      workableCompanies.set(address, names);
+    }
+    return rows.map((row) => {
+      const names = workableCompanies.get(senderAddress(row.sender));
+      return {
+        ...row,
+        company: names?.size === 1 ? [...names][0] : row.company,
+        outcome: responseOutcome(row.subject) === 'unrelated'
+          ? 'unrelated'
+          : row.outcome === 'review' ? responseOutcome(row.subject) : row.outcome,
+      };
+    });
   }
 
   @Patch('interviews/:id')
@@ -289,25 +311,37 @@ export class GmailController {
         if (!detail.ok) throw new Error('Cannot read message headers');
         const result = z.object({
           internalDate: z.coerce.number(),
-          payload: z.object({ headers: z.array(z.object({ name: z.string(), value: z.string() })).default([]) }),
-        }).parse(await detail.json());
-        const header = (name: string) => result.payload.headers.find((h) => h.name.toLowerCase() === name)?.value.trim().slice(0, 500) ?? '';
+          snippet: z.string().optional(),
+          payload: z.object({ headers: z.array(z.object({ name: z.string(), value: z.string() })).default([]) }).optional(),
+        }).safeParse(await detail.json());
+        if (!result.success || !result.data.payload || !Number.isFinite(new Date(result.data.internalDate).valueOf())) return null;
+        const { payload, snippet, internalDate } = result.data;
+        const header = (name: string) => payload.headers.find((h) => h.name.toLowerCase() === name)?.value.trim().slice(0, 500) ?? '';
         const sender = header('from');
-        const company = sender.match(/^(.+?)\s*<[^>]+>$/)?.[1].replace(/^"|"$/g, '').slice(0, 200) ?? '';
+        const company = companyFromSender(sender);
         const subject = header('subject');
+        const outcome = responseOutcome(subject, snippet);
+        if (outcome === 'unrelated') return null;
         const jobTitle = subject.match(/\b(?:your application for|ihre bewerbung als)\s+(.+)$/iu)?.[1].slice(0, 250) ?? '';
-        return { id, sender, company, subject, jobTitle, date: new Date(result.internalDate).toISOString() };
+        return { id, sender, company, subject, jobTitle, outcome, date: new Date(internalDate).toISOString() };
       }));
       const added = await this.db.asUser(userId, async (q) => {
         let count = 0;
         for (const msg of messages) {
           if (!msg) continue;
           const rows = await q(
-            `insert into private_interviews (user_id, message_id, subject, sender, received_at, company, job_title)
-             values ($1, $2, $3, $4, $5, $6, $7) on conflict do nothing returning message_id`,
-            [userId, msg.id, msg.subject, msg.sender, msg.date, msg.company, msg.jobTitle],
+            `insert into private_interviews (user_id, message_id, subject, sender, received_at, company, job_title, outcome)
+             values ($1, $2, $3, $4, $5, $6, $7, $8) on conflict do nothing returning message_id`,
+            [userId, msg.id, msg.subject, msg.sender, msg.date, msg.company, msg.jobTitle, msg.outcome],
           );
           count += rows.length;
+          if (!rows.length && msg.outcome !== 'review') {
+            await q(
+              `update private_interviews set outcome = $3
+               where user_id = $1 and message_id = $2 and outcome = 'review' and stage = 'unknown'`,
+              [userId, msg.id, msg.outcome],
+            );
+          }
         }
         return count;
       });
