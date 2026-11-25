@@ -45,6 +45,16 @@ test('an invitation grants access to shared Gmail jobs and resumes until revoked
   assert.equal((await outsider.call('POST', '/me/workspaces/accept', { token: invite.body.token })).status, 409);
   assert.equal((await delegate.call('POST', '/me/workspaces/accept', { token: invite.body.token })).status, 201);
   assert.equal((await delegate.call('POST', '/me/workspaces/accept', { token: invite.body.token })).status, 409);
+  await h.owner.query(
+    "insert into private_interviews (user_id, message_id, subject, sender, received_at) values ($1, 'private123', 'Interview', 'Recruiter', now())",
+    [owner.id],
+  );
+  const interviews = '/me/gmail/interviews';
+  const result = { company: 'Example', job_title: 'Developer', stage: 'second', outcome: 'rejected' };
+  assert.deepEqual((await delegate.call('GET', interviews + '?workspace=' + owner.id)).body, []);
+  assert.equal((await delegate.call('PATCH', interviews + '/private123', { ...result, workspace: owner.id })).status, 404);
+  assert.equal((await owner.call('PATCH', interviews + '/private123', result)).status, 200);
+  assert.equal((await owner.call('GET', interviews)).body[0].stage, 'second');
   const jobs = '/me/gmail/jobs?workspace=' + owner.id;
   const activity = '/me/gmail/jobs/activity?workspace=' + owner.id;
   const docs = '/me/resume-builder/' + owner.id + '/docs';

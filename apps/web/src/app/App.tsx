@@ -6,6 +6,7 @@ import { ApprovalsPage } from '../features/approvals/ApprovalsPage';
 import { LoginPage } from '../features/auth/LoginPage';
 import { OverviewPage } from '../features/dashboard/OverviewPage';
 import { JobsPage } from '../features/jobs/JobsPage';
+import { InterviewsPage } from '../features/interviews/InterviewsPage';
 import { ProfilePage } from '../features/profile/ProfilePage';
 import { ResumesPage } from '../features/resumes/ResumesPage';
 import { SettingsPage } from '../features/settings/SettingsPage';
@@ -34,6 +35,7 @@ export function App() {
         <Route index element={<OverviewPage />} />
         <Route path="jobs" element={<JobsPage />} />
         <Route path="email/:provider?" element={<EmailManagementPage />} />
+        <Route path="interviews" element={<InterviewsPage />} />
         <Route path="approvals" element={<ApprovalsPage />} />
         <Route path="approvals/:id" element={<ApprovalsPage />} />
         <Route path="applications" element={<ApplicationsPage />} />

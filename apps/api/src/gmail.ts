@@ -20,6 +20,17 @@ const manualJobInput = z.object({
   company: z.string().trim().max(150).optional(),
 });
 const sha256 = (value: string) => createHash('sha256').update(value).digest('base64url');
+const responseSearch = [
+  'subject:interview', 'subject:Einladung', 'subject:Vorstellungsgespräch', 'subject:Kennenlerngespräch',
+  'subject:Bewerbung', 'subject:Absage', 'subject:"your application"', 'subject:"application update"',
+  'subject:"next steps"', 'subject:"job offer"',
+].join(' ');
+const interviewFields = z.object({
+  company: z.string().trim().max(200),
+  job_title: z.string().trim().max(250),
+  stage: z.enum(['unknown', 'screen', 'first', 'second', 'final']),
+  outcome: z.enum(['review', 'positive', 'scheduled', 'rejected', 'offer', 'unrelated']),
+});
 
 function gmailConfig() {
   const { GMAIL_CLIENT_ID: clientId, GMAIL_CLIENT_SECRET: secret, GMAIL_REDIRECT_URI: redirectUri,
@@ -210,16 +221,12 @@ export class GmailController {
     });
   }
 
-  @Post('jobs/import')
-  async importJobs(@UserId() userId: string, @Query('provider') value: unknown) {
-    const provider = parse(z.enum(providers).default('linkedin'), value);
+  private async mailbox(userId: string) {
     const settings = gmailConfig();
     if (!settings) throw new ServiceUnavailableException('Gmail setup is incomplete.');
     const [connection] = await this.db.asUser(userId, (q) => q('select encrypted_refresh_token from gmail_connections'));
     if (!connection) throw new ConflictException('Connect Gmail first.');
 
-    const summary = { alertsSaved: 0, jobsAdded: 0, unreadRetained: 0, markedRead: 0 };
-    const savedMessages = new Set<string>();
     try {
       const exchange = await fetch('https://oauth2.googleapis.com/token', {
         method: 'POST',
@@ -233,6 +240,90 @@ export class GmailController {
       });
       if (!exchange.ok) throw new BadGatewayException('Gmail could not renew access. Check your connection in Settings.');
       const { access_token: token } = z.object({ access_token: z.string().min(1) }).parse(await exchange.json());
+      return token;
+    } catch (error) {
+      if (error instanceof BadGatewayException) throw error;
+      throw new BadGatewayException('Gmail could not renew access. Check your connection in Settings.');
+    }
+  }
+
+  @Get('interviews')
+  interviews(@UserId() userId: string) {
+    return this.db.asUser(userId, (q) => q(
+      `select message_id, subject, sender, received_at, company, job_title, stage, outcome
+       from private_interviews where user_id = $1 order by received_at desc, message_id`, [userId],
+    ));
+  }
+
+  @Patch('interviews/:id')
+  async updateInterview(@UserId() userId: string, @Param('id') id: string, @Body() input: unknown) {
+    const { company, job_title, stage, outcome } = parse(interviewFields, input);
+    const [row] = await this.db.asUser(userId, (q) => q(
+      `update private_interviews set company = $3, job_title = $4, stage = $5, outcome = $6
+       where user_id = $1 and message_id = $2 returning message_id`,
+      [userId, id, company, job_title, stage, outcome],
+    ));
+    if (!row) throw new NotFoundException('Interview response not found.');
+    return row;
+  }
+
+  @Post('interviews/import')
+  async importInterviews(@UserId() userId: string, @Body() input: unknown) {
+    const { cursor } = parse(z.object({ cursor: z.string().max(4096).optional() }), input ?? {});
+    const token = await this.mailbox(userId);
+    const query = new URLSearchParams({
+      q: '-in:sent -in:drafts {' + responseSearch + '}',
+      maxResults: '20',
+      ...(cursor ? { pageToken: cursor } : {}),
+    });
+    try {
+      const listing = await gmailRequest(token, 'messages?' + query);
+      if (!listing.ok) throw new Error('Cannot list messages');
+      const page = z.object({
+        messages: z.array(z.object({ id: z.string().regex(/^[a-z0-9]+$/i) })).default([]),
+        nextPageToken: z.string().optional(),
+      }).parse(await listing.json());
+      const messages = await Promise.all(page.messages.map(async ({ id }) => {
+        const detail = await gmailRequest(token, 'messages/' + id + '?format=metadata&metadataHeaders=Subject&metadataHeaders=From');
+        if (detail.status === 404) return null;
+        if (!detail.ok) throw new Error('Cannot read message headers');
+        const result = z.object({
+          internalDate: z.coerce.number(),
+          payload: z.object({ headers: z.array(z.object({ name: z.string(), value: z.string() })).default([]) }),
+        }).parse(await detail.json());
+        const header = (name: string) => result.payload.headers.find((h) => h.name.toLowerCase() === name)?.value.trim().slice(0, 500) ?? '';
+        const sender = header('from');
+        const company = sender.match(/^(.+?)\s*<[^>]+>$/)?.[1].replace(/^"|"$/g, '').slice(0, 200) ?? '';
+        const subject = header('subject');
+        const jobTitle = subject.match(/\b(?:your application for|ihre bewerbung als)\s+(.+)$/iu)?.[1].slice(0, 250) ?? '';
+        return { id, sender, company, subject, jobTitle, date: new Date(result.internalDate).toISOString() };
+      }));
+      const added = await this.db.asUser(userId, async (q) => {
+        let count = 0;
+        for (const msg of messages) {
+          if (!msg) continue;
+          const rows = await q(
+            `insert into private_interviews (user_id, message_id, subject, sender, received_at, company, job_title)
+             values ($1, $2, $3, $4, $5, $6, $7) on conflict do nothing returning message_id`,
+            [userId, msg.id, msg.subject, msg.sender, msg.date, msg.company, msg.jobTitle],
+          );
+          count += rows.length;
+        }
+        return count;
+      });
+      return { added, next: page.nextPageToken ?? null };
+    } catch {
+      throw new BadGatewayException('Could not import interview responses. Try importing again.');
+    }
+  }
+
+  @Post('jobs/import')
+  async importJobs(@UserId() userId: string, @Query('provider') value: unknown) {
+    const provider = parse(z.enum(providers).default('linkedin'), value);
+    const token = await this.mailbox(userId);
+    const summary = { alertsSaved: 0, jobsAdded: 0, unreadRetained: 0, markedRead: 0 };
+    const savedMessages = new Set<string>();
+    try {
       const query = new URLSearchParams({
         q: 'is:unread ' + alertSenders[provider],
         maxResults: '100',

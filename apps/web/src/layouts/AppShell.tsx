@@ -18,6 +18,7 @@ import {
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   BriefcaseBusiness,
+  CalendarDays,
   ClipboardCheck,
   FileText,
   LayoutDashboard,
@@ -40,6 +41,7 @@ const NAV = [
   { to: '/', label: 'Overview', icon: LayoutDashboard },
   { to: '/jobs', label: 'Job Explorer', icon: BriefcaseBusiness },
   { to: '/email', label: 'Email Management', icon: Mail },
+  { to: '/interviews', label: 'Interviews', icon: CalendarDays },
   { to: '/approvals', label: 'Approval Queue', icon: ClipboardCheck, badge: true },
   { to: '/applications', label: 'Applications', icon: Send },
   { to: '/resumes', label: 'Resume Library', icon: FileText },
