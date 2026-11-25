@@ -1,5 +1,6 @@
-import { Alert, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, MenuItem, Paper, Stack, TextField, Typography } from '@mui/material';
+import { Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, MenuItem, Stack, TextField, Typography } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ChevronDown } from 'lucide-react';
 import { useState } from 'react';
 import { ErrorAlert, LoadingBlock, PageHeader } from '../../components/ui';
 import { api, fmtDateTime } from '../../lib/api';
@@ -11,6 +12,7 @@ type Interview = {
   company: string; job_title: string; stage: keyof typeof stages; outcome: keyof typeof outcomes;
 };
 const queryKey = ['private-interviews'];
+const normalize = (value: string) => value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 
 export function InterviewsPage() {
   const qc = useQueryClient();
@@ -46,17 +48,29 @@ export function InterviewsPage() {
       await qc.invalidateQueries({ queryKey });
     },
   });
-  const rows = (interviews.data ?? []).filter(({ outcome }) => {
+  const matchesFilter = ({ outcome }: Interview) => {
     if (filter === 'advancing') return outcome === 'positive' || outcome === 'scheduled' || outcome === 'offer';
     return filter === 'all' ? outcome !== 'unrelated' : outcome === filter;
-  });
-  const companies = new Map<string, { name: string; replies: Interview[] }>();
+  };
+  const histories = new Map<string, Interview[]>();
+  const rows = [...(interviews.data ?? [])].sort((a, b) => Date.parse(b.received_at) - Date.parse(a.received_at));
   for (const row of rows) {
-    const name = row.company.trim() || 'Company unknown';
-    const key = name.toLowerCase();
-    const group = companies.get(key) ?? { name, replies: [] };
-    group.replies.push(row);
-    companies.set(key, group);
+    if (row.outcome === 'unrelated' && filter !== 'unrelated') continue;
+    const company = normalize(row.company);
+    const role = normalize(row.job_title);
+    const key = company && role ? JSON.stringify([company, role]) : row.message_id;
+    const history = histories.get(key) ?? [];
+    history.push(row);
+    histories.set(key, history);
+  }
+  const companies = new Map<string, { name: string; histories: { key: string; replies: Interview[] }[] }>();
+  for (const [key, replies] of histories) {
+    if (!replies.some(matchesFilter)) continue;
+    const name = replies[0].company.trim() || 'Company unknown';
+    const company = normalize(name);
+    const group = companies.get(company) ?? { name, histories: [] };
+    group.histories.push({ key, replies });
+    companies.set(company, group);
   }
 
   return (
@@ -78,31 +92,51 @@ export function InterviewsPage() {
           {Object.entries(outcomes).map(([value, label]) => <MenuItem key={value} value={value}>{label}</MenuItem>)}
         </TextField>
         {interviews.isPending && <LoadingBlock />}
-        {interviews.isSuccess && !rows.length && <Typography color="text.secondary">No responses match this view.</Typography>}
-        {[...companies.values()].map(({ name, replies }) => (
+        {interviews.isSuccess && !companies.size && <Typography color="text.secondary">No responses match this view.</Typography>}
+        {[...companies.values()].map(({ name, histories: companyHistories }) => (
           <Box component="section" key={name}>
             <Typography component="h2" variant="h6" sx={{ mb: 1 }}>{name}</Typography>
             <Stack spacing={1}>
-            {replies.map((row) => (
-          <Paper key={row.message_id} variant="outlined" sx={{ p: 2, overflowWrap: 'anywhere' }}>
-            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ justifyContent: 'space-between' }}>
-              <Box>
-                <Typography component="h3" variant="subtitle1">{row.job_title || row.subject || 'Recruiting response'}</Typography>
-                {row.job_title && <Typography variant="body2" color="text.secondary">{row.subject}</Typography>}
-                <Typography variant="caption" color="text.secondary">{row.sender} · {fmtDateTime(row.received_at)}</Typography>
-              </Box>
-              <Box>
-                <Button component="a" href={'https://mail.google.com/mail/u/0/#all/' + encodeURIComponent(row.message_id)}
-                  target="_blank" rel="noopener noreferrer">Open email</Button>
-                <Button onClick={() => { save.reset(); setForm(row); }}>Edit</Button>
-              </Box>
-            </Stack>
-            <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-              <Chip size="small" label={outcomes[row.outcome]} />
-              <Chip size="small" variant="outlined" label={stages[row.stage]} />
-            </Stack>
-          </Paper>
-            ))}
+              {companyHistories.map(({ key, replies }) => {
+                const newest = replies[0];
+                const latestOutcome = replies.find((row) => row.outcome !== 'review') ?? newest;
+                const latestRound = replies.find((row) => row.stage !== 'unknown')?.stage ?? 'unknown';
+                return (
+                  <Accordion key={key} variant="outlined" disableGutters>
+                    <AccordionSummary expandIcon={<ChevronDown size={18} aria-hidden />}>
+                      <Stack spacing={0.75} sx={{ width: '100%', overflowWrap: 'anywhere', pr: 1 }}>
+                        <Typography variant="subtitle1">{newest.job_title || newest.subject || 'Recruiting response'}</Typography>
+                        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center' }}>
+                          <Chip size="small" color={latestOutcome.outcome === 'rejected' ? 'error' : 'default'} label={outcomes[latestOutcome.outcome]} />
+                          {latestRound !== 'unknown' && <Chip size="small" variant="outlined" label={stages[latestRound]} />}
+                          <Typography variant="caption" color="text.secondary">
+                            {replies.length} {replies.length === 1 ? 'message' : 'messages'} · {fmtDateTime(newest.received_at)}
+                          </Typography>
+                        </Box>
+                      </Stack>
+                    </AccordionSummary>
+                    <AccordionDetails>
+                      <Stack spacing={1.5} divider={<Box sx={{ borderBottom: 1, borderColor: 'divider' }} />}>
+                        {replies.map((row) => (
+                          <Box key={row.message_id} sx={{ overflowWrap: 'anywhere' }}>
+                            <Typography variant="body2">{row.subject || 'Recruiting response'}</Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              {row.sender} · {fmtDateTime(row.received_at)}
+                            </Typography>
+                            <Box sx={{ mt: 0.5, display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center' }}>
+                              <Chip size="small" label={outcomes[row.outcome]} />
+                              <Chip size="small" variant="outlined" label={stages[row.stage]} />
+                              <Button size="small" component="a" href={'https://mail.google.com/mail/u/0/#all/' + encodeURIComponent(row.message_id)}
+                                target="_blank" rel="noopener noreferrer">Open email</Button>
+                              <Button size="small" onClick={() => { save.reset(); setForm(row); }}>Edit</Button>
+                            </Box>
+                          </Box>
+                        ))}
+                      </Stack>
+                    </AccordionDetails>
+                  </Accordion>
+                );
+              })}
             </Stack>
           </Box>
         ))}
