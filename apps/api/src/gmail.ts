@@ -358,19 +358,20 @@ export class GmailController {
   }
 
   @Post('jobs/import')
-  async importJobs(@UserId() userId: string, @Query('provider') value: unknown) {
+  async importJobs(@UserId() userId: string, @Query('provider') value: unknown, @Query('includeRead') includeRead: unknown) {
     const provider = parse(z.enum(providers).default('linkedin'), value);
+    const scanRecent = provider === 'indeed' && includeRead === 'true';
     const token = await this.mailbox(userId);
     const summary = { alertsSaved: 0, jobsAdded: 0, unreadRetained: 0, markedRead: 0 };
     const savedMessages = new Set<string>();
     try {
       const query = new URLSearchParams({
-        q: 'is:unread ' + alertSenders[provider],
+        q: (scanRecent ? 'newer_than:30d ' : 'is:unread ') + alertSenders[provider],
         maxResults: '100',
       });
       do {
         const listing = await gmailRequest(token, `messages?${query}`);
-        if (!listing.ok) throw new BadGatewayException('Gmail could not list unread alerts.');
+        if (!listing.ok) throw new BadGatewayException('Gmail could not list job alerts.');
         const page = z.object({
           messages: z.array(z.object({ id: z.string() })).default([]),
           nextPageToken: z.string().optional(),
@@ -378,15 +379,17 @@ export class GmailController {
         // Keep the unread search result stable while collecting all pages.
         for (const message of page.messages) {
           const id = encodeURIComponent(message.id);
+          let unread = !scanRecent;
           try {
             const detail = await gmailRequest(token, `messages/${id}?format=full`);
             if (!detail.ok) throw new Error();
-            const data = await detail.json() as { internalDate: string; payload?: MailPart };
+            const data = await detail.json() as { internalDate: string; labelIds?: string[]; payload?: MailPart };
+            unread ||= data.labelIds?.includes('UNREAD') === true;
             const parts = { html: [] as string[], plain: [] as string[] };
             if (data.payload) collectParts(data.payload, parts);
             const jobs = parseAlert(parts.html.join('\n'), parts.plain.join('\n'), provider);
             if (!jobs.length) {
-              summary.unreadRetained++;
+              if (unread) summary.unreadRetained++;
               continue;
             }
             const receivedAt = new Date(Number(data.internalDate)).toISOString();
@@ -410,9 +413,9 @@ export class GmailController {
             });
             summary.alertsSaved++;
             summary.jobsAdded += added;
-            savedMessages.add(id);
+            if (unread) savedMessages.add(id);
           } catch {
-            summary.unreadRetained++;
+            if (unread) summary.unreadRetained++;
           }
         }
         if (!page.nextPageToken) break;

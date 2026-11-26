@@ -139,7 +139,7 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
     }[]>('/me/gmail/jobs' + filter),
   });
   const run = useMutation({
-    mutationFn: () => api<{ alertsSaved: number; jobsAdded: number; unreadRetained: number; markedRead: number }>('/me/gmail/jobs/import' + filter, {
+    mutationFn: (includeRead: boolean) => api<{ alertsSaved: number; jobsAdded: number; unreadRetained: number; markedRead: number }>('/me/gmail/jobs/import' + filter + (includeRead ? '&includeRead=true' : ''), {
       method: 'POST',
     }),
     onSettled: refreshJobs,
@@ -180,9 +180,16 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
         {manual ? (
           <Button variant="contained" onClick={() => openForm({ url: '', title: '', company: '' })}>Add job link</Button>
         ) : !workspace && (connection.data?.connection && connection.data.configured ? (
-          <Button variant="outlined" onClick={() => run.mutate()} disabled={run.isPending}>
-            {run.isPending ? 'Importing…' : 'Import unread alerts'}
-          </Button>
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+            <Button variant="outlined" onClick={() => run.mutate(false)} disabled={run.isPending}>
+              {run.isPending && !run.variables ? 'Importing…' : 'Import unread alerts'}
+            </Button>
+            {section.id === 'indeed' && (
+              <Button variant="outlined" onClick={() => run.mutate(true)} disabled={run.isPending}>
+                {run.isPending && run.variables ? 'Importing…' : 'Import last 30 days'}
+              </Button>
+            )}
+          </Box>
         ) : connection.data && (
           <Button component={RouterLink} to="/settings">Gmail settings</Button>
         ))}
