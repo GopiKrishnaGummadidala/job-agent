@@ -47,7 +47,7 @@ function jobId(href: string, provider: Provider): string | null {
   }
 }
 
-function indeedRecommendation(href: string, label: string) {
+function indeedRecommendation(href: string) {
   try {
     const wrapper = new URL(href);
     if (wrapper.origin !== 'https://cts.indeed.com' || wrapper.username || wrapper.password) return null;
@@ -61,8 +61,7 @@ function indeedRecommendation(href: string, label: string) {
     if (target.protocol !== 'https:' || target.username || target.password || target.port
       || !/^(?:[a-z-]+\.)?indeed\.(com|de|co\.uk|fr|ca|nl|ie|com\.au)$/.test(target.hostname)
       || target.pathname !== '/pagead/clk' || !/^[\w%+=/-]{1,2048}$/.test(target.searchParams.get('ad') ?? '')
-      || typeof payload.m?.aggJobId !== 'string' || !/^\d{1,20}$/.test(payload.m.aggJobId)
-      || !/^(?:job als .+ anzeigen|view (?:this )?job|view job .+)$/i.test(label)) return null;
+      || typeof payload.m?.aggJobId !== 'string' || !/^\d{1,20}$/.test(payload.m.aggJobId)) return null;
     const url = new URL(target.pathname, target.origin);
     for (const key of ['ad', 'mo', 'rm']) {
       const value = target.searchParams.get(key);
@@ -78,7 +77,7 @@ function indeedRecommendation(href: string, label: string) {
 export function parseAlert(html: string, plainText: string, provider: Provider, subject = ''): LinkedInAlertJob[] {
   const jobs = new Map<string, LinkedInAlertJob>();
   const collect = (href: string, label = '', company?: string) => {
-    const recommendation = provider === 'indeed' ? indeedRecommendation(href, htmlToText(label).trim()) : null;
+    const recommendation = provider === 'indeed' ? indeedRecommendation(href) : null;
     const externalId = recommendation?.id ?? jobId(href, provider);
     if (!externalId) return;
     const raw = htmlToText(label);
@@ -108,9 +107,9 @@ export function parseAlert(html: string, plainText: string, provider: Provider, 
 
   const links = [...html.matchAll(
     /<a\b[^>]*?\s+href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>([\s\S]*?)<\/a\s*>/gi,
-  )].filter(([, quoted, singleQuoted, unquoted, label]) => {
+  )].filter(([, quoted, singleQuoted, unquoted]) => {
     const href = quoted ?? singleQuoted ?? unquoted;
-    return jobId(href, provider) || (provider === 'indeed' && indeedRecommendation(href, htmlToText(label).trim()));
+    return jobId(href, provider) || (provider === 'indeed' && indeedRecommendation(href));
   });
   for (const [index, link] of links.entries()) {
     const [anchor, quoted, singleQuoted, unquoted, label] = link;
