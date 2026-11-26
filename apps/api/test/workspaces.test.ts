@@ -93,6 +93,13 @@ test('an invitation grants access to shared Gmail jobs and resumes until revoked
   assert.equal(chart.daily.length, 14);
   assert.deepEqual(chart.daily.map((day: { count: number }) => day.count), [...Array(13).fill(0), 1]);
   assert.deepEqual((await outsider.call('GET', activity)).body.totals, []);
+  const statusRoute = '/me/gmail/jobs/123/status';
+  assert.equal((await delegate.call('PATCH', statusRoute, { ...status, status: 'interviewed' })).body.status, 'interviewed');
+  assert.equal((await owner.call('PATCH', statusRoute, { ...status, status: 'viewed' })).body.status, 'interviewed');
+  const [interviewed] = (await delegate.call('GET', jobs)).body;
+  assert.equal(interviewed.status_actor, delegate.email);
+  assert.ok((await owner.call('GET', '/me/gmail/jobs/activity')).body.totals
+    .some((total: { status: string; count: number }) => total.status === 'interviewed' && total.count === 1));
   await owner.call('DELETE', '/me/workspaces/delegates/' + delegate.id);
   assert.deepEqual((await delegate.call('GET', activity)).body.totals, []);
   assert.deepEqual((await delegate.call('GET', jobs)).body, []);

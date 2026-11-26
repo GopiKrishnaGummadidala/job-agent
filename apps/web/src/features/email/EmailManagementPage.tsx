@@ -16,8 +16,8 @@ const sections = [
   { id: 'glassdoor', label: 'Glassdoor' },
   { id: 'manual', label: 'Saved Links' },
 ];
-const statuses = { pending: 'Pending', viewed: 'Viewed', applied: 'Applied', unfit: 'Unfit' } as const;
-const statusColors = { pending: 'default', viewed: 'info', applied: 'success', unfit: 'warning' } as const;
+const statuses = { pending: 'Pending', viewed: 'Viewed', applied: 'Applied', interviewed: 'Interviewed', unfit: 'Unfit' } as const;
+const statusColors = { pending: 'default', viewed: 'info', applied: 'success', interviewed: 'secondary', unfit: 'warning' } as const;
 type JobStatus = keyof typeof statuses;
 type JobLinkForm = { id?: string; url: string; title: string; company: string };
 
@@ -74,7 +74,7 @@ function JobActivity({ workspace }: { workspace: string }) {
       {activity.isPending && <LoadingBlock />}
       {activity.data && (
         <>
-          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, 1fr)', sm: 'repeat(4, 1fr)' }, gap: 1, my: 2 }}>
+          <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(112px, 1fr))', gap: 1, my: 2 }}>
             {(Object.keys(statuses) as JobStatus[]).map((status) => (
               <Box key={status} sx={{ border: 1, borderColor: 'divider', borderRadius: 2, p: 1.5 }}>
                 <Chip size="small" color={statusColors[status]} label={statuses[status]} />
@@ -275,7 +275,7 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
                     </TableCell>
                     <TableCell>
                       <Chip size="small" label={statuses[job.status]} color={statusColors[job.status]} />
-                      {(job.status === 'applied' || job.status === 'unfit') && job.status_actor && (
+                      {(job.status === 'applied' || job.status === 'interviewed' || job.status === 'unfit') && job.status_actor && (
                         <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
                           {job.status_actor} · {fmtDateTime(job.status_at)}
                         </Typography>
@@ -296,12 +296,17 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
                             id: job.external_id, url: job.url, title: job.title ?? '', company: job.company ?? '',
                           })}>Edit</Button>
                         )}
-                        {job.status !== 'applied' && (
+                        {job.status !== 'applied' && job.status !== 'interviewed' && (
                           <Button size="small" onClick={() => changeStatus.mutate({ id: job.external_id, status: 'applied' })}>
                             Mark as applied
                           </Button>
                         )}
-                        {job.status !== 'unfit' && job.status !== 'applied' && (
+                        {job.status !== 'interviewed' && job.status !== 'unfit' && (
+                          <Button size="small" color="secondary" onClick={() => changeStatus.mutate({ id: job.external_id, status: 'interviewed' })}>
+                            Mark interviewed
+                          </Button>
+                        )}
+                        {job.status !== 'unfit' && job.status !== 'applied' && job.status !== 'interviewed' && (
                           <Button size="small" color="warning" onClick={() => changeStatus.mutate({ id: job.external_id, status: 'unfit' })}>
                             Mark as unfit
                           </Button>
