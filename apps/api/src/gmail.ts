@@ -111,7 +111,7 @@ export class GmailController {
     const provider = parse(z.enum(trackedProviders).default('linkedin'), value);
     const owner = parse(z.uuid().optional(), workspace) ?? userId;
     const jobs = await this.db.asUser(userId, (q) => q(
-      `select j.external_id, j.title, j.company, j.received_at, j.status, j.status_at, j.manual_url, u.email as status_actor,
+      `select j.external_id, j.title, j.company, j.received_at, j.status, j.status_at, j.manual_url, j.source_url, u.email as status_actor,
          coalesce((select jsonb_agg(jsonb_build_object('email', viewer.email, 'viewed_at', v.viewed_at)
                                    order by v.viewed_at desc, v.viewer_id)
                    from gmail_job_views v join users viewer on viewer.id = v.viewer_id
@@ -121,9 +121,9 @@ export class GmailController {
        where j.provider = $1 and j.user_id = $2 order by j.received_at desc, j.external_id`,
       [provider, owner],
     ));
-    return jobs.map(({ manual_url, ...job }) => ({
+    return jobs.map(({ manual_url, source_url, ...job }) => ({
       ...job,
-      url: provider === 'manual' ? manual_url : jobLink(provider, job.external_id),
+      url: provider === 'manual' ? manual_url : source_url ?? jobLink(provider, job.external_id),
     }));
   }
 
@@ -383,11 +383,15 @@ export class GmailController {
           try {
             const detail = await gmailRequest(token, `messages/${id}?format=full`);
             if (!detail.ok) throw new Error();
-            const data = await detail.json() as { internalDate: string; labelIds?: string[]; payload?: MailPart };
+            const data = await detail.json() as {
+              internalDate: string; labelIds?: string[];
+              payload?: MailPart & { headers?: { name: string; value: string }[] };
+            };
             unread ||= data.labelIds?.includes('UNREAD') === true;
             const parts = { html: [] as string[], plain: [] as string[] };
             if (data.payload) collectParts(data.payload, parts);
-            const jobs = parseAlert(parts.html.join('\n'), parts.plain.join('\n'), provider);
+            const subject = data.payload?.headers?.find((header) => header.name.toLowerCase() === 'subject')?.value;
+            const jobs = parseAlert(parts.html.join('\n'), parts.plain.join('\n'), provider, subject);
             if (!jobs.length) {
               if (unread) summary.unreadRetained++;
               continue;
@@ -397,9 +401,10 @@ export class GmailController {
               let count = 0;
               for (const job of jobs) {
                 const inserted = await q(
-                  `insert into gmail_alert_jobs (user_id, external_id, title, received_at, provider, company)
-                   values ($1, $2, $3, $4, $5, $6) on conflict (user_id, provider, external_id) do nothing returning external_id`,
-                  [userId, job.externalId, job.title, receivedAt, provider, job.company ?? null],
+                  `insert into gmail_alert_jobs (user_id, external_id, title, received_at, provider, company, source_url)
+                   values ($1, $2, $3, $4, $5, $6, $7) on conflict (user_id, provider, external_id) do nothing returning external_id`,
+                  [userId, job.externalId, job.title, receivedAt, provider, job.company ?? null,
+                    job.url === jobLink(provider, job.externalId) ? null : job.url],
                 );
                 count += inserted.length;
                 if (!inserted.length && (job.title || job.company)) {

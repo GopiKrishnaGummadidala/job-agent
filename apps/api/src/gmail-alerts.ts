@@ -1,3 +1,4 @@
+import { gunzipSync } from 'node:zlib';
 import { htmlToText } from './sources/adapters';
 
 export interface LinkedInAlertJob {
@@ -46,11 +47,39 @@ function jobId(href: string, provider: Provider): string | null {
   }
 }
 
+function indeedRecommendation(href: string, label: string) {
+  try {
+    const wrapper = new URL(href);
+    if (wrapper.origin !== 'https://cts.indeed.com' || wrapper.username || wrapper.password) return null;
+    const token = /^\/v3\/([\w-]{1,8192})\/[\w-]+$/.exec(wrapper.pathname)?.[1];
+    if (!token) return null;
+    const payload = JSON.parse(gunzipSync(Buffer.from(token, 'base64url'), { maxOutputLength: 16_384 }).toString());
+    if (typeof payload?.u !== 'string') return null;
+    const ordinaryId = jobId(payload.u, 'indeed');
+    if (ordinaryId) return { id: ordinaryId, url: jobLink('indeed', ordinaryId) };
+    const target = new URL(payload.u);
+    if (target.protocol !== 'https:' || target.username || target.password || target.port
+      || !/^(?:[a-z-]+\.)?indeed\.(com|de|co\.uk|fr|ca|nl|ie|com\.au)$/.test(target.hostname)
+      || target.pathname !== '/pagead/clk' || !/^[\w%+=/-]{1,2048}$/.test(target.searchParams.get('ad') ?? '')
+      || typeof payload.m?.aggJobId !== 'string' || !/^\d{1,20}$/.test(payload.m.aggJobId)
+      || !/^(?:job als .+ anzeigen|view (?:this )?job|view job .+)$/i.test(label)) return null;
+    const url = new URL(target.pathname, target.origin);
+    for (const key of ['ad', 'mo', 'rm']) {
+      const value = target.searchParams.get(key);
+      if (value) url.searchParams.set(key, value);
+    }
+    return { id: 'ad-' + payload.m.aggJobId, url: url.href };
+  } catch {
+    return null;
+  }
+}
+
 /** Collect direct job links without following redirects or loading remote content. */
-export function parseAlert(html: string, plainText: string, provider: Provider): LinkedInAlertJob[] {
+export function parseAlert(html: string, plainText: string, provider: Provider, subject = ''): LinkedInAlertJob[] {
   const jobs = new Map<string, LinkedInAlertJob>();
   const collect = (href: string, label = '', company?: string) => {
-    const externalId = jobId(href, provider);
+    const recommendation = provider === 'indeed' ? indeedRecommendation(href, htmlToText(label).trim()) : null;
+    const externalId = recommendation?.id ?? jobId(href, provider);
     if (!externalId) return;
     const raw = htmlToText(label);
     const lines = raw.split(/\r?\n/).map((line) => line.replace(/\s+/g, ' ').trim()).filter(Boolean);
@@ -69,15 +98,20 @@ export function parseAlert(html: string, plainText: string, provider: Provider):
       : text.slice(0, 250);
     const previous = jobs.get(externalId);
     const employer = previous?.company ?? company ?? glassdoorEmployer?.slice(0, 200);
+    const subjectParts = recommendation ? subject.match(/^(.+?)\s+(?:bei|at)\s+(.+)$/i) : null;
+    const recommendationCompany = subjectParts?.[2].trim().slice(0, 200);
     jobs.set(externalId, {
-      externalId, url: jobLink(provider, externalId), title: previous?.title ?? title,
-      ...(employer ? { company: employer } : {}),
+      externalId, url: recommendation?.url ?? jobLink(provider, externalId), title: previous?.title ?? subjectParts?.[1].trim().slice(0, 250) ?? title,
+      ...(employer || recommendationCompany ? { company: employer ?? recommendationCompany } : {}),
     });
   };
 
   const links = [...html.matchAll(
     /<a\b[^>]*?\s+href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>([\s\S]*?)<\/a\s*>/gi,
-  )].filter(([, quoted, singleQuoted, unquoted]) => jobId(quoted ?? singleQuoted ?? unquoted, provider));
+  )].filter(([, quoted, singleQuoted, unquoted, label]) => {
+    const href = quoted ?? singleQuoted ?? unquoted;
+    return jobId(href, provider) || (provider === 'indeed' && indeedRecommendation(href, htmlToText(label).trim()));
+  });
   for (const [index, link] of links.entries()) {
     const [anchor, quoted, singleQuoted, unquoted, label] = link;
     // Employer metadata belongs to the current job card, before the next job link.

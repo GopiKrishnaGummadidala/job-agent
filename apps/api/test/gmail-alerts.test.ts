@@ -1,6 +1,20 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { gzipSync } from 'node:zlib';
 import { parseAlert, parseLinkedInAlert } from '../src/gmail-alerts';
+
+test('Indeed Match cards decode a job destination and ignore preference links', () => {
+  const wrap = (u: string, aggJobId: string) =>
+    'https://cts.indeed.com/v3/' + gzipSync(JSON.stringify({ u, m: { aggJobId } })).toString('base64url') + '/signature';
+  const target = wrap('https://de.indeed.com/pagead/clk?ad=example-token&rm=1&xkcb=tracking', '123456789');
+  const html = `<a href="${target}">Job als Engineer anzeigen</a>
+    <a href="${target}">Change preferences</a>
+    <a href="${wrap('https://example.test/pagead/clk?ad=x', '999')}">View job</a>`;
+  assert.deepEqual(parseAlert(html, '', 'indeed', 'Engineer bei Example GmbH'), [{
+    externalId: 'ad-123456789', url: 'https://de.indeed.com/pagead/clk?ad=example-token&rm=1',
+    title: 'Engineer', company: 'Example GmbH',
+  }]);
+});
 
 test('LinkedIn alerts yield separate jobs with tracking stripped and repeated links merged', () => {
   const html = [
