@@ -579,3 +579,7 @@ kbd { padding: 1px 6px; border: 1px solid var(--line); border-bottom-width: 2px;
 .preview-toolbar h1 { flex: 1 1 260px; margin: 0; font-size: 20px; }
 .preview-desk { padding: 16px; border-radius: 12px; background: var(--desk); }
 .preview-desk .page-fit { max-width: 794px; margin: auto; overflow: hidden; }
+
+.doc-tag-filter { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.doc-tag-filter label { font-weight: 600; }
+.doc-tag-filter select { min-width: 210px; max-width: 100%; }

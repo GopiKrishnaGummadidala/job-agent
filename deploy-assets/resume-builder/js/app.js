@@ -292,12 +292,14 @@ function documentsPage() {
   if (docTag && !tags.includes(docTag)) docTag = '';
   const docs = docTag ? all.filter(d => (d.tags || []).includes(docTag)) : all;
   const count = t => all.filter(d => (d.tags || []).includes(t)).length;
-  const tagBar = tags.length
-    ? `<div class="chips doc-filter" role="group" aria-label="Filter by tag">
-        <button class="chip ${docTag ? '' : 'active'}" data-act="doc-tag" data-tag="" aria-pressed="${!docTag}">All <span class="chip-n">${all.length}</span></button>
-        ${tags.map(t => `<button class="chip ${t === docTag ? 'active' : ''}" data-act="doc-tag" data-tag="${esc(t)}" aria-pressed="${t === docTag}">${esc(t)} <span class="chip-n">${count(t)}</span></button>`).join('')}
-      </div>`
-    : '';
+  const tagBar = `<div class="doc-filter doc-tag-filter">
+      <label for="document-tag-filter">Filter by tag</label>
+      <select id="document-tag-filter" data-role="document-tag-filter">
+        <option value=""${docTag ? '' : ' selected'}>All documents (${all.length})</option>
+        ${tags.map(t => `<option value="${esc(t)}"${t === docTag ? ' selected' : ''}>${esc(t)} (${count(t)})</option>`).join('')}
+      </select>
+      <span class="muted small" role="status">Showing ${docs.length} of ${all.length} documents</span>
+    </div>`;
   // The CV a cover letter goes with: the one sharing most of its tags (Tailor tags both alike), else the newest.
   const resumes = all.filter(d => d.type !== 'cover');
   const cvFor = letter => {
@@ -392,6 +394,12 @@ document.addEventListener('click', e => {
 
 // Import a CV into a new document. From a template card (data-tpl), it opens in that template.
 document.addEventListener('change', async e => {
+  if (e.target.matches('[data-role="document-tag-filter"]')) {
+    docTag = e.target.value;
+    route();
+    $('[data-role="document-tag-filter"]')?.focus();
+    return;
+  }
   if (e.target.dataset.act !== 'import') return;
   const f = e.target.files[0];
   if (!f) return;
