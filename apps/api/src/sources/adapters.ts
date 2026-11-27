@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { z } from 'zod';
 import {
   employmentFromLabel,
   EmploymentType,
@@ -13,7 +14,7 @@ import {
 
 /** Public, documented job-board endpoints only. No scraping, no authentication, no automation. */
 
-export const BOARD_KINDS = ['greenhouse', 'lever', 'ashby', 'personio', 'recruitee', 'workable', 'smartrecruiters'] as const;
+export const BOARD_KINDS = ['greenhouse', 'lever', 'ashby', 'personio', 'recruitee', 'workable', 'smartrecruiters', 'arbeitnow'] as const;
 export type BoardKind = (typeof BOARD_KINDS)[number];
 
 export interface NormalizedJob {
@@ -93,6 +94,8 @@ export const BOARD_SYSTEMS: BoardSystem[] = [
     vendor: /(^|\.)smartrecruiters\.com$/i,
     board: 'jobs.smartrecruiters.com/<company>',
   },
+  { kind: 'arbeitnow', name: 'Arbeitnow', url: /(?:^|\/\/)(?:www\.)?(arbeitnow)\.com(?:\/|$)/i,
+    vendor: /(^|\.)arbeitnow\.com$/i, board: 'www.arbeitnow.com' },
 ];
 
 const SYSTEM_NAMES = BOARD_SYSTEMS.map((s) => s.name);
@@ -106,6 +109,7 @@ export function parseBoardRef(input: string, kind?: BoardKind): { kind: BoardKin
     // "www.recruitee.com" or "jobs.personio.de" alone are vendor sites, not boards.
     if (m && !/^(www|jobs|app|api|help|support)$/i.test(m[1])) return { kind: s.kind, token: m[1] };
   }
+  if (kind === 'arbeitnow') return raw.toLowerCase() === 'arbeitnow' ? { kind, token: 'arbeitnow' } : null;
   if (kind && TOKEN.test(raw)) return { kind, token: raw };
   return null;
 }
@@ -224,6 +228,7 @@ async function getJson(url: string): Promise<any> {
 export async function fetchBoard(kind: BoardKind, token: string, opts: FetchOptions = {}): Promise<NormalizedJob[]> {
   if (!TOKEN.test(token)) throw new Error('Invalid board token.');
   const t = encodeURIComponent(token);
+  if (kind === 'arbeitnow') return fetchArbeitnow();
 
   if (kind === 'greenhouse') {
     const data = await getJson(`https://boards-api.greenhouse.io/v1/boards/${t}/jobs?content=true`);
@@ -287,6 +292,37 @@ export async function fetchBoard(kind: BoardKind, token: string, opts: FetchOpti
   if (kind === 'recruitee') return fetchRecruitee(token);
   if (kind === 'workable') return fetchWorkable(token);
   return fetchSmartRecruiters(token, opts);
+}
+
+const arbeitnowItem = z.object({
+  slug: z.string().min(1).max(500), title: z.string().trim().min(1),
+  company_name: z.string().trim().min(1), location: z.string().default(''),
+  url: z.url({ protocol: /^https$/ }), description: z.string().default(''),
+  remote: z.boolean().optional(), created_at: z.number().int().nonnegative().optional(),
+  job_types: z.array(z.string()).optional(),
+});
+
+async function fetchArbeitnow(): Promise<NormalizedJob[]> {
+  const jobs: NormalizedJob[] = [];
+  const endpoint = 'https://www.arbeitnow.com/api/job-board-api';
+  for (let page = 1; page <= 3; page++) {
+    const payload = z.object({
+      data: z.array(z.unknown()), links: z.object({ next: z.string().nullable() }),
+    }).parse(await getJson(endpoint + '?page=' + page));
+    for (const raw of payload.data) {
+      const job = arbeitnowItem.safeParse(raw);
+      if (!job.success) continue;
+      const item = job.data;
+      jobs.push(finish({
+        external_id: item.slug, company: item.company_name, title: item.title, location: item.location,
+        remoteFlag: item.remote, url: item.url, apply_url: item.url, description: htmlToText(decodeEntities(item.description)),
+        posted_at: item.created_at === undefined ? null : iso(item.created_at * 1000),
+        employmentLabel: item.job_types?.[0],
+      }));
+    }
+    if (!payload.links.next) break;
+  }
+  return jobs;
 }
 
 // ---------- Personio: public XML feed (https://<company>.jobs.personio.de/xml) ----------

@@ -28,6 +28,7 @@ export const config = {
   ollamaBaseUrl: env.OLLAMA_BASE_URL ?? 'http://localhost:11434',
   openaiBaseUrl: env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1',
   openaiApiKey: env.OPENAI_API_KEY ?? '',
+  get paidAiEnabled() { return process.env.AI_PAID_ENABLED === 'true'; },
   openaiPriceIn: Number(env.OPENAI_PRICE_IN ?? 0),
   openaiPriceOut: Number(env.OPENAI_PRICE_OUT ?? 0),
 };

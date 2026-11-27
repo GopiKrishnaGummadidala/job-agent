@@ -3,6 +3,16 @@ import { test } from 'node:test';
 import { gzipSync } from 'node:zlib';
 import { parseAlert, parseLinkedInAlert } from '../src/gmail-alerts';
 
+test('StepStone extracts direct postings, strips tracking and ignores other hosts', () => {
+  const url = 'https://www.stepstone.de/stellenangebote--Senior-Engineer-Hamburg-Example--12345678-inline.html';
+  const html = `<a href="${url}?tracking=email">Senior Engineer</a>
+    <span class="company-name">Example</span>
+    <a href="https://notstepstone.de/stellenangebote--Job--78912345-inline.html">Other job</a>`;
+  assert.deepEqual(parseAlert(html, url, 'stepstone'), [
+    { externalId: '12345678', title: 'Senior Engineer', company: 'Example', url },
+  ]);
+});
+
 test('Indeed Match cards decode a job destination and ignore preference links', () => {
   const wrap = (u: string, aggJobId: string) =>
     'https://cts.indeed.com/v3/' + gzipSync(JSON.stringify({ u, m: { aggJobId } })).toString('base64url') + '/signature';

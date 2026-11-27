@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link as RouterLink } from 'react-router-dom';
 import { ErrorAlert, LoadingBlock, PageHeader, Stat } from '../../components/ui';
 import { api, fmtDateTime } from '../../lib/api';
+import { BOARD_LABEL } from '../../lib/boards';
 
 const EVENT_LABEL: Record<string, string> = {
   'source.added': 'Added a job board',
@@ -23,6 +24,7 @@ const EVENT_LABEL: Record<string, string> = {
   'draft.handed_off': 'Opened apply page for manual submit',
   'application.submitted': 'Recorded a submitted application',
 };
+const dayLabel = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 
 export function OverviewPage() {
   const { data, isLoading, error } = useQuery({ queryKey: ['dashboard'], queryFn: () => api('/me/dashboard') });
@@ -37,6 +39,8 @@ export function OverviewPage() {
     { label: 'Submitted', value: data.submitted },
   ];
   const max = Math.max(1, ...funnel.map((f) => f.value));
+  const discovery: { day: string; count: number }[] = data.discovery ?? [];
+  const discoveryPeak = Math.max(1, ...discovery.map(({ count }) => count));
   const setupNeeded = data.sources === 0 || data.resumes === 0;
 
   return (
@@ -60,6 +64,38 @@ export function OverviewPage() {
         <Stat label="Awaiting approval" value={data.awaiting_review} />
         <Stat label="Submitted" value={data.submitted} hint={`${data.submitted_30d} in the last 30 days`} />
         <Stat label="AI spend this month" value={`$${Number(data.ai_spend_month).toFixed(2)}`} />
+        <Stat label="First seen today" value={data.discovered_today ?? 0} />
+        <Stat label="Shortlisted" value={data.shortlisted ?? 0} />
+        <Stat label="Duplicates prevented" value={data.duplicates_30d ?? 0} hint="Board refreshes in the last 30 days" />
+        <Stat label="Upcoming interviews" value={data.upcoming_interviews ?? 0} hint="Private confirmed calendar meetings" />
+      </Box>
+      <Box className="mt-4 grid gap-4 lg:grid-cols-2">
+        <Paper className="p-4">
+          <Typography variant="h6" component="h2">Jobs first seen</Typography>
+          <Typography variant="body2" color="text.secondary">Last 7 days · Berlin time</Typography>
+          <List dense>
+            {discovery.map(({ day, count }) => (
+              <ListItem key={day} disableGutters sx={{ display: 'grid', gridTemplateColumns: '58px 1fr 44px', gap: 1 }}>
+                <Typography variant="body2">{dayLabel.format(new Date(day))}</Typography>
+                <LinearProgress aria-hidden="true" variant="determinate" value={100 * count / discoveryPeak} />
+                <Typography variant="body2" align="right">{count}</Typography>
+              </ListItem>
+            ))}
+          </List>
+        </Paper>
+        <Paper className="p-4">
+          <Typography variant="h6" component="h2">Board performance</Typography>
+          <Typography variant="body2" color="text.secondary">Last 30 days</Typography>
+          {!data.providers?.length && <Typography variant="body2" sx={{ mt: 1 }}>No board runs recorded yet.</Typography>}
+          <List dense>
+            {data.providers?.map((provider: { kind: string; runs: number; failures: number; inserted: number; last_success: string | null }) => (
+              <ListItem key={provider.kind} disableGutters>
+                <ListItemText primary={BOARD_LABEL[provider.kind] ?? provider.kind}
+                  secondary={`${provider.runs} runs · ${provider.inserted} new jobs · ${provider.failures} failed${provider.last_success ? ` · Last success ${fmtDateTime(provider.last_success)}` : ''}`} />
+              </ListItem>
+            ))}
+          </List>
+        </Paper>
       </Box>
       <Box className="mt-4 grid gap-4 lg:grid-cols-2">
         <Paper className="p-4">

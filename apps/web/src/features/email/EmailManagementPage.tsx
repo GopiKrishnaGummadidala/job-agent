@@ -1,11 +1,11 @@
 import {
-  Alert, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, MenuItem, Paper, Tab, Table, TableBody, TableCell, TableContainer, TextField,
+  Alert, Box, Button, Checkbox, Chip, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, MenuItem, Paper, Tab, Table, TableBody, TableCell, TableContainer, TextField,
   TableHead, TablePagination, TableRow, Tabs, Typography,
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ExternalLink } from 'lucide-react';
 import { useState } from 'react';
-import { Link as RouterLink, Navigate, useParams } from 'react-router-dom';
+import { Link as RouterLink, Navigate, useParams, useSearchParams } from 'react-router-dom';
 import { ErrorAlert, LoadingBlock, PageHeader } from '../../components/ui';
 import { WorkspaceAccess, useWorkspace } from '../workspace/WorkspaceAccess';
 import { api, fmtDateTime } from '../../lib/api';
@@ -14,6 +14,7 @@ const sections = [
   { id: 'linkedin', label: 'LinkedIn' },
   { id: 'indeed', label: 'Indeed' },
   { id: 'glassdoor', label: 'Glassdoor' },
+  { id: 'stepstone', label: 'StepStone' },
   { id: 'manual', label: 'Saved Links' },
 ];
 const statuses = { pending: 'Pending', viewed: 'Viewed', applied: 'Applied', interviewed: 'Interviewed', unfit: 'Unfit' } as const;
@@ -113,9 +114,12 @@ function JobActivity({ workspace }: { workspace: string }) {
 }
 
 function GmailJobs({ section, workspace }: { section: typeof sections[number]; workspace: string }) {
+  const [params, setParams] = useSearchParams();
+  const posting = params.get('posting');
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(10);
   const [statusFilter, setStatusFilter] = useState('all');
+  const [markRead, setMarkRead] = useState(false);
   const [form, setForm] = useState<JobLinkForm | null>(null);
   const manual = section.id === 'manual';
   const filter = '?' + new URLSearchParams({ provider: section.id, ...(workspace ? { workspace } : {}) });
@@ -124,6 +128,7 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
   const refreshJobs = () => Promise.all([
     qc.invalidateQueries({ queryKey: jobKey }),
     qc.invalidateQueries({ queryKey: activityKey(workspace) }),
+    qc.invalidateQueries({ queryKey: ['jobs'] }),
   ]);
   const connection = useQuery({
     queryKey: ['gmail'],
@@ -139,7 +144,10 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
     }[]>('/me/gmail/jobs' + filter),
   });
   const run = useMutation({
-    mutationFn: (includeRead: boolean) => api<{ alertsSaved: number; jobsAdded: number; unreadRetained: number; markedRead: number }>('/me/gmail/jobs/import' + filter + (includeRead ? '&includeRead=true' : ''), {
+    mutationFn: (mode: 'incremental' | 'unread' | 'recent') => api<{
+      alertsSaved: number; jobsAdded: number; unreadRetained: number; markedRead: number; alreadyProcessed: number;
+      failed: number; checkpointAdvanced: boolean;
+    }>('/me/gmail/jobs/import' + filter + (mode === 'incremental' ? '&incremental=true' : mode === 'recent' ? '&includeRead=true' : '') + (markRead ? '&markRead=true' : ''), {
       method: 'POST',
     }),
     onSettled: refreshJobs,
@@ -171,7 +179,7 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
     saveLink.reset();
     setForm(fields);
   };
-  const rows = (jobs.data ?? []).filter((job) => statusFilter === 'all' || job.status === statusFilter);
+  const rows = (jobs.data ?? []).filter((job) => posting ? job.external_id === posting : statusFilter === 'all' || job.status === statusFilter);
   const currentPage = Math.min(page, Math.max(0, Math.ceil(rows.length / pageSize) - 1));
   return (
     <Paper variant="outlined" sx={{ overflow: 'hidden' }}>
@@ -181,14 +189,18 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
           <Button variant="contained" onClick={() => openForm({ url: '', title: '', company: '' })}>Add job link</Button>
         ) : !workspace && (connection.data?.connection && connection.data.configured ? (
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
-            <Button variant="outlined" onClick={() => run.mutate(false)} disabled={run.isPending}>
-              {run.isPending && !run.variables ? 'Importing…' : 'Import unread alerts'}
+            <FormControlLabel label="Mark imported alerts as read" control={
+              <Checkbox checked={markRead} disabled={run.isPending} onChange={(_, checked) => setMarkRead(checked)} />
+            } />
+            <Button variant="contained" onClick={() => run.mutate('incremental')} disabled={run.isPending}>
+              {run.isPending && run.variables === 'incremental' ? 'Syncing…' : 'Sync new alerts'}
             </Button>
-            {section.id === 'indeed' && (
-              <Button variant="outlined" onClick={() => run.mutate(true)} disabled={run.isPending}>
-                {run.isPending && run.variables ? 'Importing…' : 'Import last 30 days'}
-              </Button>
-            )}
+            <Button variant="outlined" onClick={() => run.mutate('unread')} disabled={run.isPending}>
+              {run.isPending && run.variables === 'unread' ? 'Importing…' : 'Import unread alerts'}
+            </Button>
+            <Button variant="outlined" onClick={() => run.mutate('recent')} disabled={run.isPending}>
+              {run.isPending && run.variables === 'recent' ? 'Importing…' : 'Import last 30 days'}
+            </Button>
           </Box>
         ) : connection.data && (
           <Button component={RouterLink} to="/settings">Gmail settings</Button>
@@ -215,7 +227,12 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
         </Dialog>
       )}
       <Box sx={{ px: 2, pb: 2 }}>
+        {posting && <Button onClick={() => {
+          setParams((previous) => { const next = new URLSearchParams(previous); next.delete('posting'); return next; }, { replace: true });
+          setPage(0);
+        }}>Show all jobs</Button>}
         <TextField select size="small" label="Filter by status" value={statusFilter} sx={{ minWidth: 155 }}
+          disabled={Boolean(posting)}
           onChange={(event) => { setStatusFilter(event.target.value); setPage(0); }}>
           <MenuItem value="all">All statuses</MenuItem>
           {Object.entries(statuses).map(([value, label]) => <MenuItem key={value} value={value}>{label}</MenuItem>)}
@@ -223,8 +240,12 @@ function GmailJobs({ section, workspace }: { section: typeof sections[number]; w
         <ErrorAlert error={connection.error ?? jobs.error ?? run.error ?? changeStatus.error} />
       </Box>
       {run.data && (
-        <Alert sx={{ mx: 2, mb: 2 }} severity={run.data.unreadRetained ? 'warning' : 'success'}>
+        <Alert sx={{ mx: 2, mb: 2 }} severity={run.data.unreadRetained || run.data.failed ? 'warning' : 'success'}>
           Added {run.data.jobsAdded} jobs from {run.data.alertsSaved} alerts processed.
+          {run.data.alreadyProcessed > 0 && ` Skipped ${run.data.alreadyProcessed} previously imported alerts.`}
+          {run.data.failed > 0 && ` ${run.data.failed} messages could not be processed.`}
+          {run.variables === 'incremental' && (run.data.checkpointAdvanced
+            ? ' Sync progress saved.' : ' The next sync will retry this window.')}
           {run.data.markedRead > 0 && ` Marked ${run.data.markedRead} alerts as read in Gmail.`}
           {run.data.unreadRetained > 0 && ` ${run.data.unreadRetained} alerts stayed unread for review.`}
         </Alert>

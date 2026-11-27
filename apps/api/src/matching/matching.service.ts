@@ -9,7 +9,11 @@ export async function loadProfile(q: Q, userId: string) {
 
 export async function loadPrefs(q: Q, userId: string) {
   await q(`insert into job_preferences (user_id, name) values ($1, 'Default') on conflict do nothing`, [userId]);
-  return (await q(`select * from job_preferences where user_id = $1 and name = 'Default'`, [userId]))[0];
+  return (await q(
+    `select p.* from job_preferences p left join user_settings s on s.user_id = p.user_id
+     where p.user_id = $1 and (p.id = s.active_search_profile_id or (s.active_search_profile_id is null and p.name = 'Default'))`,
+    [userId],
+  ))[0];
 }
 
 @Injectable()

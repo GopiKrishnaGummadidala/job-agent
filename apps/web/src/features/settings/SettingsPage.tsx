@@ -3,12 +3,18 @@ import {
   Box,
   Button,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  FormControlLabel,
   IconButton,
   List,
   ListItem,
   ListItemText,
   MenuItem,
   Paper,
+  Switch,
   TextField,
   Typography,
 } from '@mui/material';
@@ -27,8 +33,71 @@ export function SettingsPage() {
         <SourcesCard />
         <AiCard />
         <GmailCard />
+        <DiscoveryRunsCard />
       </Box>
     </>
+  );
+}
+
+function DiscoveryRunsCard() {
+  const qc = useQueryClient();
+  const requests = useQuery({
+    queryKey: ['sources', 'requests'],
+    queryFn: () => api<{ id: string; token: string; status: string; requested_at: string; attempts: number; error_details: string | null; can_cancel: boolean }[]>('/me/sources/requests'),
+    refetchInterval: (query) => query.state.data?.some((item) => item.status === 'queued' || item.status === 'running') ? 3000 : false,
+  });
+  const cancel = useMutation({
+    mutationFn: (id: string) => api('/me/sources/requests/' + id + '/cancel', { method: 'POST' }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['sources', 'requests'] }),
+  });
+  const latestFinished = requests.data?.find((item) => item.status === 'completed' || item.status === 'failed')?.id;
+  useEffect(() => {
+    if (latestFinished) {
+      void qc.invalidateQueries({ queryKey: ['sources'], exact: true });
+      void qc.invalidateQueries({ queryKey: ['sources', 'runs'] });
+      void qc.invalidateQueries({ queryKey: ['jobs'] });
+      void qc.invalidateQueries({ queryKey: ['dashboard'] });
+    }
+  }, [latestFinished, qc]);
+  const runs = useQuery({
+    queryKey: ['sources', 'runs'],
+    queryFn: () => api<{
+      id: string; kind: string; token: string; status: string; started_at: string;
+      jobs_discovered: number; jobs_inserted: number; jobs_updated: number;
+      duplicates_prevented: number; failed_records: number; error_details?: string;
+    }[]>('/me/sources/runs'),
+  });
+  return (
+    <Paper className="p-4">
+      <Typography variant="h6" component="h2">Board refresh history</Typography>
+      <ErrorAlert error={runs.error ?? requests.error ?? cancel.error} />
+      {!!requests.data?.length && (
+        <List dense sx={{ maxHeight: 220, overflow: 'auto' }} aria-label="Manual refresh requests">
+          {requests.data.map((item) => (
+            <ListItem key={item.id} divider secondaryAction={item.can_cancel && (
+              <Button size="small" disabled={cancel.isPending} onClick={() => cancel.mutate(item.id)}>Cancel</Button>
+            )}>
+              <ListItemText primary={`${item.token} · ${item.status}`}
+                secondary={`${fmtDateTime(item.requested_at)}${item.error_details ? ' · ' + item.error_details : ''}`} />
+            </ListItem>
+          ))}
+        </List>
+      )}
+      {runs.isPending && <LoadingBlock rows={2} />}
+      {runs.data?.length === 0 && <Typography color="text.secondary">No board refreshes recorded yet.</Typography>}
+      {!!runs.data?.length && (
+        <List dense sx={{ maxHeight: 360, overflow: 'auto' }}>
+          {runs.data.map((run) => (
+            <ListItem key={run.id} divider>
+              <ListItemText
+                primary={`${BOARD_LABEL[run.kind] ?? run.kind} · ${run.token} · ${run.status}`}
+                secondary={run.error_details ?? `${fmtDateTime(run.started_at)} · ${run.jobs_discovered} found · ${run.jobs_inserted} new · ${run.jobs_updated} changed · ${run.duplicates_prevented} duplicates · ${run.failed_records} invalid`}
+              />
+            </ListItem>
+          ))}
+        </List>
+      )}
+    </Paper>
   );
 }
 
@@ -77,6 +146,7 @@ function SourcesCard() {
   const sources = useQuery({ queryKey: ['sources'], queryFn: () => api('/me/sources') });
   const [ref, setRef] = useState('');
   const [kind, setKind] = useState('auto');
+  const [schedule, setSchedule] = useState<{ id: string; value: string } | null>(null);
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['sources'] });
     qc.invalidateQueries({ queryKey: ['jobs'] });
@@ -90,12 +160,21 @@ function SourcesCard() {
     },
   });
   const remove = useMutation({ mutationFn: (id: string) => api(`/me/sources/${id}`, { method: 'DELETE' }), onSuccess: invalidate });
+  const enqueue = useMutation({
+    mutationFn: (id: string) => api(`/me/sources/${id}/refresh`, { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['sources', 'requests'] }),
+  });
+  const saveSchedule = useMutation({
+    mutationFn: ({ id, value }: { id: string; value: string }) =>
+      api(`/me/sources/${id}/schedule`, { method: 'PATCH', json: { times: value.split(',').map((time) => time.trim()).filter(Boolean) } }),
+    onSuccess: () => { setSchedule(null); invalidate(); },
+  });
 
   return (
     <Paper className="p-4">
       <Typography variant="h6" component="h2">Job boards</Typography>
       <Typography variant="body2" color="text.secondary" className="mb-3">
-        Paste the job board address of a company you want to work for, or a link to one of its job postings. Boards refresh every few hours.
+        Paste a company board address or a link to one of its postings. Scheduled refreshes run when the server is awake and scheduling is enabled.
       </Typography>
       <Box component="ul" className="mb-3 grid gap-x-4 gap-y-0.5 pl-0 text-sm sm:grid-cols-2" sx={{ listStyle: 'none', color: 'text.secondary' }}>
         {BOARD_FORMATS.map(([name, format]) => (
@@ -121,7 +200,7 @@ function SourcesCard() {
         </TextField>
         <Button type="submit" variant="contained" disabled={add.isPending}>{add.isPending ? 'Checking…' : 'Add'}</Button>
       </Box>
-      <Box className="mt-2"><ErrorAlert error={add.error ?? remove.error} /></Box>
+      <Box className="mt-2"><ErrorAlert error={add.error ?? remove.error ?? enqueue.error} /></Box>
       {add.data && <Alert severity="success">Added {add.data.token}: {add.data.jobs} open jobs.</Alert>}
       {sources.isLoading ? (
         <LoadingBlock rows={3} />
@@ -132,9 +211,16 @@ function SourcesCard() {
               key={s.id}
               divider
               secondaryAction={
-                <IconButton edge="end" aria-label={`Remove ${s.company_name || s.token}`} onClick={() => remove.mutate(s.id)}>
-                  <Trash2 size={16} />
-                </IconButton>
+                <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                  <Button size="small" disabled={enqueue.isPending || !s.enabled} onClick={() => enqueue.mutate(s.id)}>Run now</Button>
+                  <Button size="small" onClick={() => {
+                    saveSchedule.reset();
+                    setSchedule({ id: s.id, value: (s.schedule_times ?? []).map((time: string) => time.slice(0, 5)).join(', ') });
+                  }}>Schedule</Button>
+                  <IconButton edge="end" aria-label={`Remove ${s.company_name || s.token}`} onClick={() => remove.mutate(s.id)}>
+                    <Trash2 size={16} />
+                  </IconButton>
+                </Box>
               }
             >
               <ListItemText
@@ -148,6 +234,23 @@ function SourcesCard() {
             </ListItem>
           ))}
         </List>
+      )}
+      {schedule && (
+        <Dialog open fullWidth maxWidth="xs" onClose={() => { if (!saveSchedule.isPending) setSchedule(null); }}>
+          <Box component="form" onSubmit={(event) => { event.preventDefault(); saveSchedule.mutate(schedule); }}>
+            <DialogTitle>Board refresh schedule</DialogTitle>
+            <DialogContent>
+              <TextField fullWidth autoFocus margin="dense" label="Times in Berlin" value={schedule.value}
+                helperText="Separate HH:mm times with commas. Leave blank to turn off scheduled refreshes."
+                onChange={(event) => setSchedule({ ...schedule, value: event.target.value })} />
+              <ErrorAlert error={saveSchedule.error} />
+            </DialogContent>
+            <DialogActions>
+              <Button disabled={saveSchedule.isPending} onClick={() => setSchedule(null)}>Cancel</Button>
+              <Button type="submit" variant="contained" disabled={saveSchedule.isPending}>Save schedule</Button>
+            </DialogActions>
+          </Box>
+        </Dialog>
       )}
       <Typography variant="caption" color="text.secondary" component="p" className="mt-2">
         LinkedIn, Indeed, StepStone and XING forbid automated access, and Workday has no public job feed, so they are not connected.
@@ -168,12 +271,15 @@ function AiCard() {
   const save = useMutation({
     mutationFn: () => {
       const { user_id: _u, ...rest } = s;
-      return api('/me/settings', { method: 'PUT', json: { ...rest, monthly_budget_usd: Number(rest.monthly_budget_usd) } });
+      return api('/me/settings', { method: 'PUT', json: {
+        ...rest, monthly_budget_usd: Number(rest.monthly_budget_usd), daily_budget_usd: Number(rest.daily_budget_usd ?? 1),
+      } });
     },
     onSuccess: (d) => qc.setQueryData(['profile'], d),
   });
 
   if (!s || options.isLoading) return <Paper className="p-4"><LoadingBlock rows={4} /></Paper>;
+  if (options.error || !options.data) return <ErrorAlert error={options.error} />;
   const o = options.data;
   const modelChoices: string[] =
     s.ai_provider === 'ollama' ? o.ollama.models : s.ai_provider === 'anthropic' ? o.anthropic.models : [];
@@ -207,6 +313,15 @@ function AiCard() {
           <MenuItem value="openai">OpenAI-compatible API</MenuItem>
           <MenuItem value="anthropic">Anthropic Claude</MenuItem>
         </TextField>
+        {(s.ai_provider === 'openai' || s.ai_provider === 'anthropic') && !o.paidEnabled && (
+          <Alert severity="info">Paid requests are disabled on this server. You can save provider settings for later.</Alert>
+        )}
+        {s.ai_provider === 'ollama' && (
+          <FormControlLabel label="Automatically assess top matches with local Ollama (up to three daily)" control={
+            <Switch checked={s.auto_assess_local ?? false}
+              onChange={(_, checked) => setS({ ...s, auto_assess_local: checked })} />
+          } />
+        )}
         {s.ai_provider !== 'none' &&
           (modelChoices.length ? (
             <TextField select label="Model" value={s.ai_model} onChange={(e) => setS({ ...s, ai_model: e.target.value })}
@@ -217,11 +332,18 @@ function AiCard() {
             <TextField label="Model" value={s.ai_model} onChange={(e) => setS({ ...s, ai_model: e.target.value })} placeholder="e.g. gpt-5-mini" />
           ))}
         <TextField
+          label="Daily AI budget (USD)"
+          type="number"
+          value={s.daily_budget_usd ?? 1}
+          onChange={(e) => setS({ ...s, daily_budget_usd: e.target.value })}
+          helperText="Applies to paid requests. The daily limit resets at midnight in Berlin."
+        />
+        <TextField
           label="Monthly AI budget (USD)"
           type="number"
           value={s.monthly_budget_usd}
           onChange={(e) => setS({ ...s, monthly_budget_usd: e.target.value })}
-          helperText="Paid AI calls stop when this month's spend reaches the budget. Ollama is not counted."
+          helperText="Paid requests reserve estimated cost before running. Ollama is free."
         />
         <TextField
           label="Resume Builder URL"

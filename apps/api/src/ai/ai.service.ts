@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { BadGatewayException, BadRequestException, HttpException, Injectable } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, ConflictException, HttpException, Injectable } from '@nestjs/common';
 import { config } from '../config';
 import { Db } from '../db';
 import { loadSettings } from '../profile';
@@ -10,6 +10,7 @@ export interface AiRequest {
   system: string;
   user: string;
   maxTokens: number;
+  expectedModel?: { provider: string; model: string };
 }
 
 export interface AiResult {
@@ -49,6 +50,7 @@ export class AiService {
     }
     return {
       ollama: { available: ollamaAvailable, models: ollamaModels },
+      paidEnabled: config.paidAiEnabled,
       openai: { configured: !!config.openaiApiKey, baseUrl: config.openaiBaseUrl },
       anthropic: { configured: !!process.env.ANTHROPIC_API_KEY, models: ANTHROPIC_MODELS },
     };
@@ -58,20 +60,13 @@ export class AiService {
     const settings = await this.db.asUser(userId, (q) => loadSettings(q, userId));
     const provider: string = settings.ai_provider;
     const model: string = settings.ai_model;
+    if (req.expectedModel && (provider !== req.expectedModel.provider || model !== req.expectedModel.model)) {
+      throw new ConflictException('AI settings changed. Run the assessment again.');
+    }
     if (provider === 'none') throw new BadRequestException('No AI provider is configured. Choose one in Settings.');
     if (!model) throw new BadRequestException('Choose an AI model in Settings.');
 
-    if (provider !== 'ollama') {
-      const [{ spent }] = await this.db.asUser(userId, (q) =>
-        q(`select coalesce(sum(est_cost_usd), 0)::float as spent from ai_usage where at >= date_trunc('month', now())`),
-      );
-      if (spent >= settings.monthly_budget_usd) {
-        throw new HttpException(
-          `Monthly AI budget of $${settings.monthly_budget_usd.toFixed(2)} reached. Raise it in Settings or switch to Ollama.`,
-          402,
-        );
-      }
-    }
+    const reservation = provider === 'ollama' ? null : await this.reserveBudget(userId, provider, model, req);
 
     let out: { text: string; inputTokens: number; outputTokens: number; costUsd: number };
     try {
@@ -86,19 +81,56 @@ export class AiService {
       throw new BadGatewayException(`AI provider error (${provider}): ${(e as Error).message}`);
     }
 
-    await this.db.asUser(userId, (q) =>
-      q(
+    await this.db.asUser(userId, async (q) => {
+      if (reservation) await q('select pg_advisory_xact_lock(hashtextextended($1, 131))', [userId]);
+      await q(
         `insert into ai_usage (user_id, provider, model, task, prompt_version, input_tokens, output_tokens, est_cost_usd)
          values ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [userId, provider, model, req.task, req.promptVersion, out.inputTokens, out.outputTokens, out.costUsd],
-      ),
-    );
+      );
+      if (reservation) await q('delete from ai_budget_reservations where id = $1', [reservation]);
+    });
     return { text: out.text.trim(), provider, model, costUsd: out.costUsd };
+  }
+
+  private async reserveBudget(userId: string, provider: string, model: string, req: AiRequest) {
+    if (!config.paidAiEnabled) throw new BadRequestException('Paid AI calls are disabled on this server.');
+    const prices = provider === 'openai' ? [config.openaiPriceIn, config.openaiPriceOut] : ANTHROPIC_PRICES[model];
+    if (!prices?.every((price) => Number.isFinite(price) && price > 0)) {
+      throw new BadRequestException('Configure AI usage prices before using this paid model.');
+    }
+    // Use UTF-8 byte length as a conservative input estimate and reserve the full output limit.
+    const estimated = ((Buffer.byteLength(req.system + req.user) + 128) * prices[0] + req.maxTokens * prices[1]) / 1_000_000;
+    return this.db.asUser(userId, async (q) => {
+      await q('select pg_advisory_xact_lock(hashtextextended($1, 131))', [userId]);
+      const settings = await loadSettings(q, userId);
+      if (settings.ai_provider !== provider || settings.ai_model !== model) throw new ConflictException('AI settings changed. Try again.');
+      await q('delete from ai_budget_reservations where expires_at <= now()');
+      const [usage] = await q(
+        `with boundaries as (
+           select date_trunc('day', now(), 'Europe/Berlin') as today,
+                  date_trunc('month', now(), 'Europe/Berlin') as month
+         )
+         select coalesce(sum(est_cost_usd) filter (where at >= today), 0)::float as daily,
+                coalesce(sum(est_cost_usd), 0)::float as monthly,
+                (select coalesce(sum(estimated_usd), 0)::float from ai_budget_reservations) as reserved
+         from ai_usage cross join boundaries where at >= month`,
+      );
+      if (usage.daily + usage.reserved + estimated > settings.daily_budget_usd) {
+        throw new HttpException('This request would exceed your daily AI budget.', 402);
+      }
+      if (usage.monthly + usage.reserved + estimated > settings.monthly_budget_usd) {
+        throw new HttpException('This request would exceed your monthly AI budget.', 402);
+      }
+      const [row] = await q('insert into ai_budget_reservations (user_id,estimated_usd) values ($1,$2) returning id', [userId, estimated]);
+      return row.id as string;
+    });
   }
 
   private async ollama(model: string, req: AiRequest) {
     const res = await fetch(`${config.ollamaBaseUrl}/api/chat`, {
       method: 'POST',
+      redirect: 'error',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         model,

@@ -27,6 +27,10 @@ export function candidateBlock(profile: any, prefs: any, resumeText: string): st
     languages: profile.languages,
     summary: profile.summary,
     target_roles: prefs.titles,
+    preferred_locations: prefs.locations,
+    preferred_position_languages: prefs.target_languages,
+    preferred_engagements: prefs.target_engagements,
+    target_annual_eur_negotiable: prefs.salary_target_eur,
   };
   return `<candidate>\n${esc(JSON.stringify(facts, null, 1))}\n</candidate>\n<resume>\n${esc(clip(resumeText, 4000))}\n</resume>`;
 }

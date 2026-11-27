@@ -8,18 +8,20 @@ export interface LinkedInAlertJob {
   company?: string;
 }
 
-export const providers = ['linkedin', 'indeed', 'glassdoor'] as const;
+export const providers = ['linkedin', 'indeed', 'glassdoor', 'stepstone'] as const;
 export type Provider = typeof providers[number];
 
 export const alertSenders: Record<Provider, string> = {
   linkedin: '{from:jobalerts-noreply@linkedin.com from:jobs-noreply@linkedin.com}',
   indeed: '{from:donotreply@match.indeed.com from:indeed.com from:indeedmail.com from:indeed.de from:indeed.co.uk from:indeed.fr from:indeed.ca from:indeed.nl from:indeed.ie from:indeed.com.au}',
   glassdoor: 'from:glassdoor.com',
+  stepstone: '{from:stepstone.de from:stepstone.at from:stepstone.com}',
 };
 
 export function jobLink(provider: Provider, id: string): string {
   if (provider === 'indeed') return 'https://www.indeed.com/viewjob?jk=' + encodeURIComponent(id);
   if (provider === 'glassdoor') return 'https://www.glassdoor.com/partner/jobListing.htm?jobListingId=' + encodeURIComponent(id);
+  if (provider === 'stepstone') return 'https://www.stepstone.de/jobs?what=' + encodeURIComponent(id);
   return 'https://www.linkedin.com/jobs/view/' + encodeURIComponent(id) + '/';
 }
 
@@ -38,6 +40,10 @@ function jobId(href: string, provider: Provider): string | null {
       if (!/^\/(job-listing\/[^/]+|partner\/jobListing)\.htm$/i.test(url.pathname)) return null;
       const id = url.searchParams.get('jl') ?? url.searchParams.get('jobListingId');
       return id && /^\d{1,24}$/.test(id) ? id : null;
+    }
+    if (provider === 'stepstone') {
+      if (!/^(?:www\.)?stepstone\.(?:de|at)$/.test(url.hostname) || url.port) return null;
+      return /^\/stellenangebote--[^/]+--(\d{4,20})(?:-inline)?\.html$/i.exec(url.pathname)?.[1] ?? null;
     }
     if (!['www.linkedin.com', 'linkedin.com'].includes(url.hostname)) return null;
     const match = url.pathname.match(/^\/(?:comm\/)?jobs\/view\/(?:[^/]*-)?(\d+)\/?$/);
@@ -99,8 +105,10 @@ export function parseAlert(html: string, plainText: string, provider: Provider, 
     const employer = previous?.company ?? company ?? glassdoorEmployer?.slice(0, 200);
     const subjectParts = recommendation ? subject.match(/^(.+?)\s+(?:bei|at)\s+(.+)$/i) : null;
     const recommendationCompany = subjectParts?.[2].trim().slice(0, 200);
+    const stepstoneUrl = provider === 'stepstone' ? href.split(/[?#]/, 1)[0] : undefined;
     jobs.set(externalId, {
-      externalId, url: recommendation?.url ?? jobLink(provider, externalId), title: previous?.title ?? subjectParts?.[1].trim().slice(0, 250) ?? title,
+      externalId, url: previous?.url ?? stepstoneUrl ?? recommendation?.url ?? jobLink(provider, externalId),
+      title: previous?.title ?? subjectParts?.[1].trim().slice(0, 250) ?? title,
       ...(employer || recommendationCompany ? { company: employer ?? recommendationCompany } : {}),
     });
   };

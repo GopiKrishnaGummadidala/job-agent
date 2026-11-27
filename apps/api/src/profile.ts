@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Put, UseGuards } from '@nestjs/common';
+import { Body, ConflictException, Controller, Get, NotFoundException, Param, ParseUUIDPipe, Post, Put, UseGuards } from '@nestjs/common';
 import { z } from 'zod';
 import { AuthGuard, parse, UserId } from './auth';
 import { audit, Db, Q } from './db';
@@ -26,6 +26,9 @@ const prefsSchema = z.object({
   locations: list,
   remote_ok: z.boolean(),
   salary_floor: z.number().int().min(0).max(10_000_000).nullable(),
+  salary_target_eur: z.number().int().min(0).max(10_000_000).nullable().optional(),
+  target_languages: list.optional(),
+  target_engagements: list.optional(),
   excluded_companies: list,
   excluded_keywords: list,
   min_score: z.number().int().min(0).max(100),
@@ -35,13 +38,15 @@ const settingsSchema = z.object({
   ai_provider: z.enum(['none', 'ollama', 'openai', 'anthropic']),
   ai_model: z.string().trim().max(100),
   monthly_budget_usd: z.number().min(0).max(1000),
+  daily_budget_usd: z.number().min(0).max(1000).optional(),
+  auto_assess_local: z.boolean().optional(),
   resume_builder_url: z.union([z.literal(''), z.url().regex(/^https?:\/\//, 'Must be an http(s) URL').max(500)]),
 });
 
 export async function loadSettings(q: Q, userId: string) {
   await q('insert into user_settings (user_id) values ($1) on conflict do nothing', [userId]);
   const [s] = await q('select * from user_settings where user_id = $1', [userId]);
-  return { ...s, monthly_budget_usd: Number(s.monthly_budget_usd) };
+  return { ...s, monthly_budget_usd: Number(s.monthly_budget_usd), daily_budget_usd: Number(s.daily_budget_usd) };
 }
 
 function setClause(data: Record<string, unknown>, offset: number) {
@@ -63,6 +68,7 @@ export class ProfileController {
       profile: await loadProfile(q, userId),
       preferences: await loadPrefs(q, userId),
       settings: await loadSettings(q, userId),
+      search_profiles: await q('select id, name from job_preferences where user_id = $1 order by name', [userId]),
     }));
   }
 
@@ -81,12 +87,47 @@ export class ProfileController {
 
   @Put('preferences')
   async putPrefs(@UserId() userId: string, @Body() body: unknown) {
-    const data = parse(prefsSchema, body);
+    const { profile_id, ...data } = parse(prefsSchema.extend({ profile_id: z.uuid().optional() }), body);
     await this.db.asUser(userId, async (q) => {
-      await loadPrefs(q, userId);
-      const { sql, values } = setClause(data, 2);
-      await q(`update job_preferences set ${sql} where user_id = $1 and name = 'Default'`, [userId, ...values]);
+      const active = await loadPrefs(q, userId);
+      const { sql, values } = setClause(data, 3);
+      const rows = await q(`update job_preferences set ${sql} where user_id = $1 and id = $2 returning id`,
+        [userId, profile_id ?? active.id, ...values]);
+      if (!rows.length) throw new NotFoundException('Search profile not found.');
       await audit(q, userId, 'preferences.updated', null);
+    });
+    await this.matching.recompute(userId);
+    return this.get(userId);
+  }
+
+  @Post('search-profiles')
+  async createSearchProfile(@UserId() userId: string, @Body() body: unknown) {
+    const { name } = parse(z.object({ name: z.string().trim().min(1).max(80) }), body);
+    await this.db.asUser(userId, async (q) => {
+      const active = await loadPrefs(q, userId);
+      const [created] = await q(
+        `insert into job_preferences (user_id, name, titles, keywords, locations, remote_ok, salary_floor,
+           excluded_companies, excluded_keywords, min_score, salary_target_eur, target_languages, target_engagements)
+         select user_id, $2, titles, keywords, locations, remote_ok, salary_floor,
+           excluded_companies, excluded_keywords, min_score, salary_target_eur, target_languages, target_engagements
+         from job_preferences where user_id = $1 and id = $3
+         on conflict (user_id, name) do nothing returning id`, [userId, name, active.id],
+      );
+      if (!created) throw new ConflictException('A search profile already uses this name.');
+      await loadSettings(q, userId);
+      await q('update user_settings set active_search_profile_id = $2 where user_id = $1', [userId, created.id]);
+    });
+    await this.matching.recompute(userId);
+    return this.get(userId);
+  }
+
+  @Put('search-profiles/:id/active')
+  async activateSearchProfile(@UserId() userId: string, @Param('id', ParseUUIDPipe) id: string) {
+    await this.db.asUser(userId, async (q) => {
+      const [profile] = await q('select id from job_preferences where user_id = $1 and id = $2', [userId, id]);
+      if (!profile) throw new NotFoundException('Search profile not found.');
+      await loadSettings(q, userId);
+      await q('update user_settings set active_search_profile_id = $2 where user_id = $1', [userId, id]);
     });
     await this.matching.recompute(userId);
     return this.get(userId);
@@ -107,7 +148,7 @@ export class ProfileController {
   @Get('dashboard')
   dashboard(@UserId() userId: string) {
     return this.db.asUser(userId, async (q) => {
-      const [prefs] = await q(`select min_score from job_preferences where name = 'Default'`);
+      const prefs = await loadPrefs(q, userId);
       const minScore = prefs?.min_score ?? 40;
       const [c] = await q(
         `select
@@ -118,13 +159,42 @@ export class ProfileController {
            (select count(*) from application_drafts where status in ('approved', 'handed_off'))::int as approved,
            (select count(*) from applications)::int as submitted,
            (select count(*) from applications where submitted_at > now() - interval '30 days')::int as submitted_30d,
+           (select count(*) from job_matches where status = 'saved')::int as shortlisted,
+           (select count(*) from private_calendar_interviews where user_id = $2 and starts_at >= now())::int as upcoming_interviews,
            (select count(*) from job_sources)::int as sources,
            (select count(*) from resume_files)::int as resumes,
            (select coalesce(sum(est_cost_usd), 0) from ai_usage where at >= date_trunc('month', now()))::float as ai_spend_month`,
-        [minScore],
+        [minScore, userId],
+      );
+      const providers = await q(
+        `select b.kind, count(*)::int as runs,
+                count(*) filter (where r.status = 'failed')::int as failures,
+                coalesce(sum(r.jobs_inserted), 0)::int as inserted,
+                coalesce(sum(r.duplicates_prevented), 0)::int as duplicates,
+                max(r.ended_at) filter (where r.status = 'completed') as last_success
+         from job_discovery_runs r
+         join job_sources s on s.board_id = r.board_id and s.user_id = $1
+         join boards b on b.id = r.board_id
+         where r.started_at >= now() - interval '30 days'
+         group by b.kind order by b.kind`, [userId],
+      );
+      const discovery = await q(
+        `with days as (
+           select (now() at time zone 'Europe/Berlin')::date - day_offset as day
+           from generate_series(0, 6) as days(day_offset)
+         ), seen as (
+           select (j.first_seen_at at time zone 'Europe/Berlin')::date as day, count(*)::int as count
+           from job_matches m join jobs j on j.id = m.job_id
+           where m.user_id = $1 and j.first_seen_at >= ((select min(day) from days)::timestamp at time zone 'Europe/Berlin')
+           group by 1
+         )
+         select days.day::text, coalesce(seen.count, 0) as count from days left join seen using (day) order by days.day`, [userId],
       );
       const activity = await q(`select type, entity_id, data, at from audit_events order by at desc limit 15`);
-      return { ...c, min_score: minScore, activity };
+      return { ...c, min_score: minScore, activity, providers, discovery,
+        duplicates_30d: providers.reduce((sum, provider) => sum + provider.duplicates, 0),
+        discovered_today: discovery.at(-1)?.count ?? 0,
+      };
     });
   }
 }

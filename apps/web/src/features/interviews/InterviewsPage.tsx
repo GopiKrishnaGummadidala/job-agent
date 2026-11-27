@@ -1,21 +1,24 @@
-import { Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, MenuItem, Stack, TextField, Typography } from '@mui/material';
+import { Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, MenuItem, Stack, Tab, Tabs, TextField, Typography } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronDown } from 'lucide-react';
 import { useState } from 'react';
 import { ErrorAlert, LoadingBlock, PageHeader } from '../../components/ui';
 import { api, fmtDateTime } from '../../lib/api';
+import { berlinMeetingTime, CalendarMeetings, calendarKey, type CalendarMeeting } from './CalendarMeetings';
 
 const stages = { unknown: 'Round unknown', screen: 'Screening', first: 'First round', second: 'Second round', final: 'Final round' };
 const outcomes = { review: 'Needs review', positive: 'Positive response', scheduled: 'Interview scheduled', rejected: 'Rejected', offer: 'Offer', unrelated: 'Unrelated' };
 type Interview = {
   message_id: string; subject: string; sender: string; received_at: string;
   company: string; job_title: string; stage: keyof typeof stages; outcome: keyof typeof outcomes;
+  calendar?: CalendarMeeting;
 };
 const queryKey = ['private-interviews'];
 const normalize = (value: string) => value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 
 export function InterviewsPage() {
   const qc = useQueryClient();
+  const [view, setView] = useState<'upcoming' | 'history'>('upcoming');
   const [form, setForm] = useState<Interview | null>(null);
   const [filter, setFilter] = useState('advancing');
   const [cursor, setCursor] = useState<string>();
@@ -23,6 +26,10 @@ export function InterviewsPage() {
   const interviews = useQuery({
     queryKey,
     queryFn: () => api<Interview[]>('/me/gmail/interviews'),
+  });
+  const calendar = useQuery({
+    queryKey: calendarKey,
+    queryFn: () => api<{ connected: boolean; meetings: CalendarMeeting[] }>('/me/gmail/calendar/interviews'),
   });
   const scan = useMutation({
     mutationFn: async () => {
@@ -53,7 +60,12 @@ export function InterviewsPage() {
     return filter === 'all' ? outcome !== 'unrelated' : outcome === filter;
   };
   const histories = new Map<string, Interview[]>();
-  const rows = [...(interviews.data ?? [])].sort((a, b) => Date.parse(b.received_at) - Date.parse(a.received_at));
+  const calendarRows: Interview[] = (calendar.data?.meetings ?? []).map((item) => ({
+    message_id: 'calendar:' + item.event_id, subject: item.title, sender: 'Google Calendar',
+    received_at: item.starts_at, company: item.company, job_title: item.job_title,
+    stage: 'unknown', outcome: 'scheduled', calendar: item,
+  }));
+  const rows = [...(interviews.data ?? []), ...calendarRows].sort((a, b) => Date.parse(b.received_at) - Date.parse(a.received_at));
   for (const row of rows) {
     if (row.outcome === 'unrelated' && filter !== 'unrelated') continue;
     const company = normalize(row.company);
@@ -76,11 +88,18 @@ export function InterviewsPage() {
   return (
     <>
       <PageHeader title="Interviews" subtitle="Private to your account. Shared workspace members have no access."
-        actions={<Button variant="contained" disabled={scan.isPending} onClick={() => {
+        actions={view === 'history' && <Button variant="contained" disabled={scan.isPending} onClick={() => {
           if (!cursor) setAdded(0);
           scan.mutate();
         }}>{scan.isPending ? 'Scanning Gmail…' : cursor ? 'Resume scan' : 'Scan Gmail'}</Button>} />
-      <Stack spacing={2}>
+      <Tabs value={view} onChange={(_, value) => setView(value)} aria-label="Interview views" sx={{ mb: 2 }}>
+        <Tab value="upcoming" label="Upcoming" />
+        <Tab value="history" label="History" />
+      </Tabs>
+      <ErrorAlert error={calendar.error} />
+      {calendar.isPending && <LoadingBlock />}
+      {view === 'upcoming' && calendar.data && <CalendarMeetings connected={calendar.data.connected} confirmed={calendar.data.meetings} />}
+      {view === 'history' && <Stack spacing={2}>
         <Alert severity="info">
           Search read and unread mail for likely recruiting responses in English and German. Review the matches and fill in the job title and interview round where needed. Gmail read status stays the same.
         </Alert>
@@ -99,7 +118,7 @@ export function InterviewsPage() {
             <Stack spacing={1}>
               {companyHistories.map(({ key, replies }) => {
                 const newest = replies[0];
-                const latestOutcome = replies.find((row) => row.outcome !== 'review') ?? newest;
+                const latestOutcome = replies.find((row) => !row.calendar && row.outcome !== 'review') ?? newest;
                 const latestRound = replies.find((row) => row.stage !== 'unknown')?.stage ?? 'unknown';
                 return (
                   <Accordion key={key} variant="outlined" disableGutters>
@@ -121,14 +140,20 @@ export function InterviewsPage() {
                           <Box key={row.message_id} sx={{ overflowWrap: 'anywhere' }}>
                             <Typography variant="body2">{row.subject || 'Recruiting response'}</Typography>
                             <Typography variant="caption" color="text.secondary">
-                              {row.sender} · {fmtDateTime(row.received_at)}
+                              {row.sender} · {row.calendar ? berlinMeetingTime.format(new Date(row.received_at)) + ' Berlin time' : fmtDateTime(row.received_at)}
                             </Typography>
                             <Box sx={{ mt: 0.5, display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center' }}>
                               <Chip size="small" label={outcomes[row.outcome]} />
                               <Chip size="small" variant="outlined" label={stages[row.stage]} />
-                              <Button size="small" component="a" href={'https://mail.google.com/mail/u/0/#all/' + encodeURIComponent(row.message_id)}
-                                target="_blank" rel="noopener noreferrer">Open email</Button>
-                              <Button size="small" onClick={() => { save.reset(); setForm(row); }}>Edit</Button>
+                              {row.calendar ? (
+                                row.calendar.calendar_url && <Button size="small" href={row.calendar.calendar_url} target="_blank" rel="noopener noreferrer">Open Calendar</Button>
+                              ) : (
+                                <>
+                                  <Button size="small" component="a" href={'https://mail.google.com/mail/u/0/#all/' + encodeURIComponent(row.message_id)}
+                                    target="_blank" rel="noopener noreferrer">Open email</Button>
+                                  <Button size="small" onClick={() => { save.reset(); setForm(row); }}>Edit</Button>
+                                </>
+                              )}
                             </Box>
                           </Box>
                         ))}
@@ -140,7 +165,7 @@ export function InterviewsPage() {
             </Stack>
           </Box>
         ))}
-      </Stack>
+      </Stack>}
       {form && (
         <Dialog open fullWidth maxWidth="sm" onClose={() => { if (!save.isPending) setForm(null); }}>
           <Box component="form" onSubmit={(event) => { event.preventDefault(); save.mutate(form); }}>

@@ -17,6 +17,7 @@ import { NestFactory } from '@nestjs/core';
 import cookieParser from 'cookie-parser';
 import type { NextFunction, Request, Response } from 'express';
 import { AiService } from './ai/ai.service';
+import { JobAssessmentService } from './ai/job-assessment.service';
 import { AssistService } from './assist';
 import { AuthController, AuthGuard, AuthService } from './auth';
 import { config } from './config';
@@ -67,7 +68,7 @@ class HealthController {
     DraftsController,
     AiController,
   ],
-  providers: [Db, AuthService, AuthGuard, MatchingService, SourcesService, AiService, AssistService],
+  providers: [Db, AuthService, AuthGuard, MatchingService, SourcesService, AiService, JobAssessmentService, AssistService],
 })
 export class AppModule {}
 

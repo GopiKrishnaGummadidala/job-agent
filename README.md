@@ -135,3 +135,16 @@ apps/api   NestJS + PostgreSQL (row-level security), no Redis
   src/assist.ts             Playwright pre-fill, never submits
 apps/web   React 19 + Vite + MUI + MUI X Data Grid (community) + Tailwind
 ```
+### Discovery run history
+
+**Email Management → Sync new alerts** scans Gmail from a separate checkpoint for each connected mailbox and provider. The first sync checks roughly 30 days. A short overlap handles boundary messages, and failed retrievals leave the checkpoint unchanged. Full unread and 30-day imports are available for recovery.
+
+Paid AI requests require `AI_PAID_ENABLED=true` on the server plus provider credentials and positive usage prices. Daily and monthly limits include active cost reservations, and reported usage replaces the estimate after a successful response. These are application estimates. Use provider-side billing limits for an independent spending cap.
+
+Automatic assessment is off by default. When enabled with a local Ollama endpoint, a queued or scheduled board refresh can assess up to three high-scoring jobs per account per day. Use manual assessment for older or changed postings.
+
+**Sources & Settings** shows refresh history for subscribed boards. Job Explorer shows source references for postings with matching normalized application URLs. Board refreshes preserve existing job IDs and application history.
+
+Use **Run now** beside a subscribed board to queue a refresh. The refresh history shows progress and lets you cancel before the postings are saved. A request already sent to the provider can finish, but its cancelled result is discarded. Interrupted queue claims are recovered after 35 minutes, and failed requests retry up to three attempts with backoff. Manual refreshes can run with the automatic schedule disabled. Scheduled refreshes require `SCHEDULER=on` and run while the host is awake.
+
+Add `https://www.arbeitnow.com/` in **Job boards** to import the first three pages of the public European feed. A posting falling outside that window is kept because the feed window cannot establish that it closed. The public feed requires no API key. Check the provider's terms before commercial use. [Arbeitnow API](https://www.arbeitnow.com/blog/job-board-api)

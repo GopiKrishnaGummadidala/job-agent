@@ -11,6 +11,28 @@ import { alertSenders, jobLink, parseAlert, providers } from './gmail-alerts';
 import { companyFromSender, responseOutcome, senderAddress, workableInterview } from './interview-responses';
 
 const scope = 'https://www.googleapis.com/auth/gmail.modify';
+const calendarScope = 'https://www.googleapis.com/auth/calendar.events.owned.readonly';
+const calendarEvent = z.object({
+  id: z.string().min(1).max(1024),
+  summary: z.string().default('Calendar meeting'),
+  start: z.object({ dateTime: z.iso.datetime({ offset: true }).optional() }).optional(),
+  status: z.string().optional(),
+  attendees: z.array(z.object({ self: z.boolean().optional(), responseStatus: z.string().optional() })).optional(),
+  htmlLink: z.url({ protocol: /^https$/ }).optional(),
+  hangoutLink: z.url({ protocol: /^https$/ }).optional(),
+  conferenceData: z.object({ entryPoints: z.array(z.object({ entryPointType: z.string(), uri: z.string() })).optional() }).optional(),
+});
+
+function meeting(event: z.infer<typeof calendarEvent>) {
+  if (!event.start?.dateTime || event.status === 'cancelled'
+    || event.attendees?.some((attendee) => attendee.self && attendee.responseStatus === 'declined')) return null;
+  const link = event.hangoutLink ?? event.conferenceData?.entryPoints?.find((entry) => entry.entryPointType === 'video')?.uri;
+  return {
+    event_id: event.id, title: event.summary.slice(0, 300), starts_at: event.start.dateTime,
+    calendar_url: event.htmlLink ?? null,
+    meeting_url: z.url({ protocol: /^https$/ }).safeParse(link).data ?? null,
+  };
+}
 const trackedProviders = [...providers, 'manual'] as const;
 const manualJobInput = z.object({
   workspace: z.uuid().optional(),
@@ -223,11 +245,13 @@ export class GmailController {
     });
   }
 
-  private async mailbox(userId: string) {
+  private async mailbox(userId: string, purpose: 'gmail' | 'calendar' = 'gmail') {
     const settings = gmailConfig();
     if (!settings) throw new ServiceUnavailableException('Gmail setup is incomplete.');
-    const [connection] = await this.db.asUser(userId, (q) => q('select encrypted_refresh_token from gmail_connections'));
-    if (!connection) throw new ConflictException('Connect Gmail first.');
+    const [connection] = await this.db.asUser(userId, (q) => q(purpose === 'gmail'
+      ? 'select email as mailbox, encrypted_refresh_token from gmail_connections'
+      : 'select null as mailbox, encrypted_refresh_token from private_calendar_connections'));
+    if (!connection) throw new ConflictException(purpose === 'gmail' ? 'Connect Gmail first.' : 'Connect Google Calendar first.');
 
     try {
       const exchange = await fetch('https://oauth2.googleapis.com/token', {
@@ -240,13 +264,85 @@ export class GmailController {
         }),
         signal: AbortSignal.timeout(10_000),
       });
-      if (!exchange.ok) throw new BadGatewayException('Gmail could not renew access. Check your connection in Settings.');
+      if (!exchange.ok) throw new Error('Token renewal failed');
       const { access_token: token } = z.object({ access_token: z.string().min(1) }).parse(await exchange.json());
-      return token;
+      return { token, mailbox: connection.mailbox as string | null };
     } catch (error) {
-      if (error instanceof BadGatewayException) throw error;
-      throw new BadGatewayException('Gmail could not renew access. Check your connection in Settings.');
+      throw new BadGatewayException(purpose === 'gmail'
+        ? 'Gmail could not renew access. Check your connection in Settings.'
+        : 'Google Calendar could not renew access. Reconnect Google Calendar.');
     }
+  }
+
+  @Get('calendar/interviews')
+  async calendarInterviews(@UserId() userId: string) {
+    return this.db.asUser(userId, async (q) => ({
+      connected: (await q('select 1 from private_calendar_connections where user_id = $1', [userId])).length > 0,
+      meetings: await q(
+        `select event_id, title, starts_at, calendar_url, meeting_url, company, job_title
+         from private_calendar_interviews where user_id = $1 order by starts_at`, [userId],
+      ),
+    }));
+  }
+
+  private async calendarRequest(token: string, path: string) {
+    const response = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events' + path, {
+      headers: { Authorization: 'Bearer ' + token }, signal: AbortSignal.timeout(10_000),
+    }).catch(() => null);
+    if (response?.status === 404) throw new NotFoundException('Calendar meeting no longer exists.');
+    if (response?.status === 403) throw new ServiceUnavailableException('Enable the Google Calendar API and check the Calendar permission.');
+    if (!response?.ok) throw new BadGatewayException('Google Calendar could not load meetings.');
+    return response.json();
+  }
+
+  @Get('calendar/upcoming')
+  async upcomingInterviews(@UserId() userId: string) {
+    const { token } = await this.mailbox(userId, 'calendar');
+    const now = new Date();
+    const params = new URLSearchParams({
+      timeMin: now.toISOString(),
+      timeMax: new Date(now.getTime() + 90 * 86400_000).toISOString(),
+      singleEvents: 'true', orderBy: 'startTime', maxResults: '250',
+      fields: 'nextPageToken,items(id,summary,start,status,attendees(self,responseStatus),htmlLink,hangoutLink,conferenceData(entryPoints(entryPointType,uri)))',
+    });
+    const candidates = [];
+    do {
+      const page = z.object({ nextPageToken: z.string().optional(), items: z.array(calendarEvent).default([]) })
+        .parse(await this.calendarRequest(token, '?' + params));
+      for (const event of page.items) {
+        const item = meeting(event);
+        if (item) candidates.push(item);
+      }
+      if (!page.nextPageToken) break;
+      params.set('pageToken', page.nextPageToken);
+    } while (true);
+    return candidates;
+  }
+
+  @Post('calendar/interviews')
+  async confirmCalendarInterview(@UserId() userId: string, @Body() input: unknown) {
+    const { event_id, company, job_title } = parse(z.object({
+      event_id: z.string().max(1024).regex(/^[A-Za-z0-9_-]+$/),
+      company: z.string().trim().min(1).max(200),
+      job_title: z.string().trim().min(1).max(250),
+    }), input);
+    const { token } = await this.mailbox(userId, 'calendar');
+    const item = meeting(calendarEvent.parse(await this.calendarRequest(token, '/' + encodeURIComponent(event_id))));
+    if (!item) throw new ConflictException('Choose a scheduled calendar meeting.');
+    await this.db.asUser(userId, (q) => q(
+      `insert into private_calendar_interviews (user_id,event_id,title,starts_at,calendar_url,meeting_url,company,job_title)
+       values ($1,$2,$3,$4,$5,$6,$7,$8) on conflict (user_id,event_id) do update
+       set title=excluded.title, starts_at=excluded.starts_at, calendar_url=excluded.calendar_url,
+         meeting_url=excluded.meeting_url, company=excluded.company, job_title=excluded.job_title`,
+      [userId, item.event_id, item.title, item.starts_at, item.calendar_url, item.meeting_url, company, job_title],
+    ));
+    return { saved: true };
+  }
+
+  @Delete('calendar/interviews/:id')
+  async removeCalendarInterview(@UserId() userId: string, @Param('id') id: string) {
+    await this.db.asUser(userId, (q) => q('delete from private_calendar_interviews where user_id = $1 and event_id = $2', [userId, id]));
+    return { removed: true };
   }
 
   @Get('interviews')
@@ -298,7 +394,7 @@ export class GmailController {
   @Post('interviews/import')
   async importInterviews(@UserId() userId: string, @Body() input: unknown) {
     const { cursor } = parse(z.object({ cursor: z.string().max(4096).optional() }), input ?? {});
-    const token = await this.mailbox(userId);
+    const { token } = await this.mailbox(userId);
     const query = new URLSearchParams({
       q: '-in:sent -in:drafts {' + responseSearch + '}',
       maxResults: '20',
@@ -358,15 +454,31 @@ export class GmailController {
   }
 
   @Post('jobs/import')
-  async importJobs(@UserId() userId: string, @Query('provider') value: unknown, @Query('includeRead') includeRead: unknown) {
+  async importJobs(@UserId() userId: string, @Query('provider') value: unknown,
+    @Query('includeRead') includeRead: unknown, @Query('markRead') markRead: unknown,
+    @Query('incremental') incremental: unknown) {
     const provider = parse(z.enum(providers).default('linkedin'), value);
-    const scanRecent = provider === 'indeed' && includeRead === 'true';
-    const token = await this.mailbox(userId);
-    const summary = { alertsSaved: 0, jobsAdded: 0, unreadRetained: 0, markedRead: 0 };
+    const scanIncremental = incremental === 'true';
+    const scanRecent = scanIncremental || includeRead === 'true';
+    const { token, mailbox } = await this.mailbox(userId);
+    if (!mailbox) throw new ConflictException('Reconnect your Gmail account first.');
+    const updateLabels = markRead === 'true';
+    const summary = { alertsSaved: 0, jobsAdded: 0, unreadRetained: 0, markedRead: 0, alreadyProcessed: 0,
+      failed: 0, checkpointAdvanced: false };
     const savedMessages = new Set<string>();
     try {
+      const cutoff = Math.floor(Date.now() / 1000);
+      let window = scanRecent ? 'newer_than:30d' : 'is:unread';
+      if (scanIncremental) {
+        const [previous] = await this.db.asUser(userId, (q) => q(
+          'select scanned_through from gmail_discovery_windows where user_id = $1 and mailbox = $2 and provider = $3',
+          [userId, mailbox, provider],
+        ));
+        const last = previous ? Math.floor(new Date(previous.scanned_through).getTime() / 1000) : cutoff - 30 * 86400;
+        window = `after:${last - 300} before:${cutoff}`;
+      }
       const query = new URLSearchParams({
-        q: (scanRecent ? 'newer_than:30d ' : 'is:unread ') + alertSenders[provider],
+        q: window + ' ' + alertSenders[provider],
         maxResults: '100',
       });
       do {
@@ -376,18 +488,33 @@ export class GmailController {
           messages: z.array(z.object({ id: z.string() })).default([]),
           nextPageToken: z.string().optional(),
         }).parse(await listing.json());
+        const processed = new Set((await this.db.asUser(userId, (q) => q(
+          `select message_id from gmail_processed_job_alerts
+           where user_id = $1 and mailbox = $2 and provider = $3 and message_id = any($4::text[])`,
+          [userId, mailbox, provider, page.messages.map(({ id }) => id)],
+        ))).map(({ message_id }) => message_id));
         // Keep the unread search result stable while collecting all pages.
         for (const message of page.messages) {
           const id = encodeURIComponent(message.id);
+          if (processed.has(message.id)) {
+            summary.alreadyProcessed++;
+            if (updateLabels && !scanRecent) savedMessages.add(id);
+            if (!scanRecent || !updateLabels) continue;
+          }
           let unread = !scanRecent;
           try {
             const detail = await gmailRequest(token, `messages/${id}?format=full`);
+            if (detail.status === 404 || detail.status === 410) continue;
             if (!detail.ok) throw new Error();
             const data = await detail.json() as {
               internalDate: string; labelIds?: string[];
               payload?: MailPart & { headers?: { name: string; value: string }[] };
             };
             unread ||= data.labelIds?.includes('UNREAD') === true;
+            if (processed.has(message.id)) {
+              if (unread) savedMessages.add(id);
+              continue;
+            }
             const parts = { html: [] as string[], plain: [] as string[] };
             if (data.payload) collectParts(data.payload, parts);
             const subject = data.payload?.headers?.find((header) => header.name.toLowerCase() === 'subject')?.value;
@@ -398,6 +525,12 @@ export class GmailController {
             }
             const receivedAt = new Date(Number(data.internalDate)).toISOString();
             const added = await this.db.asUser(userId, async (q) => {
+              const claim = await q(
+                `insert into gmail_processed_job_alerts (user_id, mailbox, provider, message_id)
+                 values ($1, $2, $3, $4) on conflict do nothing returning message_id`,
+                [userId, mailbox, provider, message.id],
+              );
+              if (!claim.length) return null;
               let count = 0;
               for (const job of jobs) {
                 const inserted = await q(
@@ -416,16 +549,30 @@ export class GmailController {
               }
               return count;
             });
-            summary.alertsSaved++;
-            summary.jobsAdded += added;
-            if (unread) savedMessages.add(id);
+            if (added === null) summary.alreadyProcessed++;
+            else {
+              summary.alertsSaved++;
+              summary.jobsAdded += added;
+            }
+            if (updateLabels && unread) savedMessages.add(id);
           } catch {
+            summary.failed++;
             if (unread) summary.unreadRetained++;
           }
         }
         if (!page.nextPageToken) break;
         query.set('pageToken', page.nextPageToken);
       } while (true);
+      if (scanIncremental && !summary.failed) {
+        await this.db.asUser(userId, (q) => q(
+          `insert into gmail_discovery_windows (user_id, mailbox, provider, scanned_through)
+           values ($1, $2, $3, to_timestamp($4))
+           on conflict (user_id, mailbox, provider) do update
+           set scanned_through = greatest(gmail_discovery_windows.scanned_through, excluded.scanned_through)`,
+          [userId, mailbox, provider, cutoff],
+        ));
+        summary.checkpointAdvanced = true;
+      }
       // Changing labels during pagination can remove messages from later search pages.
       for (const id of savedMessages) {
         try {
@@ -447,22 +594,23 @@ export class GmailController {
   }
 
   @Post('connect')
-  async connect(@UserId() userId: string) {
+  async connect(@UserId() userId: string, @Query('purpose') value: unknown) {
+    const purpose = parse(z.enum(['gmail', 'calendar']).default('gmail'), value);
     const settings = gmailConfig();
     if (!settings) throw new ServiceUnavailableException('Gmail setup is incomplete.');
     const state = randomBytes(32).toString('base64url');
     const verifier = randomBytes(32).toString('base64url');
     await this.db.asUser(userId, async (q) => {
-      await q('delete from gmail_oauth_attempts');
+      await q('delete from gmail_oauth_attempts where purpose = $1 or expires_at <= now()', [purpose]);
       await q(
-        "insert into gmail_oauth_attempts values ($1, $2, $3, now() + interval '10 minutes')",
-        [sha256(state), userId, verifier],
+        "insert into gmail_oauth_attempts (state_hash,user_id,verifier,expires_at,purpose) values ($1, $2, $3, now() + interval '10 minutes', $4)",
+        [sha256(state), userId, verifier, purpose],
       );
     });
     const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
     url.search = new URLSearchParams({
       client_id: settings.clientId, redirect_uri: settings.redirectUri, response_type: 'code',
-      scope, state, access_type: 'offline', prompt: 'consent', code_challenge: sha256(verifier),
+      scope: purpose === 'calendar' ? calendarScope : scope, state, access_type: 'offline', prompt: 'consent', code_challenge: sha256(verifier),
       code_challenge_method: 'S256',
     }).toString();
     return { url: url.toString() };
@@ -474,15 +622,16 @@ export class GmailController {
     response.setHeader('Referrer-Policy', 'no-referrer');
     const returnUrl = new URL('/settings', config.webOrigin);
     const finish = (result: string) => {
-      returnUrl.searchParams.set('gmail', result);
+      returnUrl.searchParams.set(returnUrl.pathname === '/interviews' ? 'calendar' : 'gmail', result);
       return response.redirect(303, returnUrl.toString());
     };
     const settings = gmailConfig();
     const parsed = callbackQuery.safeParse(query);
     if (!settings || !parsed.success) return finish('failed');
     const [attempt] = await this.db.asUser(userId, (q) =>
-      q('delete from gmail_oauth_attempts where state_hash = $1 and expires_at > now() returning verifier',
+      q('delete from gmail_oauth_attempts where state_hash = $1 and expires_at > now() returning verifier, purpose',
         [sha256(parsed.data.state)]));
+    if (attempt?.purpose === 'calendar') returnUrl.pathname = '/interviews';
     if (!attempt || parsed.data.error || !parsed.data.code) return finish('failed');
 
     try {
@@ -496,6 +645,15 @@ export class GmailController {
       });
       if (!exchange.ok) return finish('failed');
       const tokens = tokenResponse.parse(await exchange.json());
+      if (attempt.purpose === 'calendar') {
+        if (!tokens.scope.split(/\s+/).includes(calendarScope)) return finish('failed');
+        await this.db.asUser(userId, (q) => q(
+          `insert into private_calendar_connections (user_id, encrypted_refresh_token) values ($1, $2)
+           on conflict (user_id) do update set encrypted_refresh_token = excluded.encrypted_refresh_token`,
+          [userId, seal(tokens.refresh_token, settings.key, userId)],
+        ));
+        return finish('connected');
+      }
       if (!tokens.scope.split(/\s+/).includes(scope)) return finish('failed');
       const mailbox = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', {
         headers: { Authorization: `Bearer ${tokens.access_token}` },

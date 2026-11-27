@@ -1,11 +1,10 @@
-import { Body, Controller, Get, NotFoundException, Param, ParseUUIDPipe, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, ConflictException, Controller, Get, NotFoundException, Param, ParseUUIDPipe, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { z } from 'zod';
-import { ASSESS_SYSTEM, ASSESS_VERSION, candidateBlock, jobBlock, parseAssessment } from './ai/prompts';
-import { AiService } from './ai/ai.service';
+import { JobAssessmentService } from './ai/job-assessment.service';
 import { AuthGuard, parse, UserId } from './auth';
 import { audit, Db } from './db';
+import { providers as emailProviders } from './gmail-alerts';
 import { loadPrefs, loadProfile } from './matching/matching.service';
-import { loadResumes, recommendResume } from './resumes';
 import { BOARD_KINDS } from './sources/adapters';
 import { EMPLOYMENT_TYPES, SENIORITIES, WORKPLACES } from './sources/classify';
 import { EUROPE, EUROPE_WIDE } from './sources/countries';
@@ -34,7 +33,8 @@ const listQuery = z.object({
   type: list(z.enum(EMPLOYMENT_TYPES)),
   workplace: list(z.enum(WORKPLACES)),
   seniority: list(z.enum(SENIORITIES)),
-  source: list(z.enum(BOARD_KINDS)),
+  source: list(z.enum([...BOARD_KINDS, ...emailProviders])),
+  includeEmail: z.enum(['true', 'false']).default('false'),
   company: list(z.string().max(200), false),
   /** ISO country codes; a country also matches Europe-wide postings when it is in Europe. */
   country: list(z.string().regex(/^[A-Z]{2}$/)),
@@ -49,7 +49,7 @@ const escapeLike = (s?: string) => (s ? `%${s.replace(/[\\%_]/g, (c) => `\\${c}`
 export class JobsController {
   constructor(
     private db: Db,
-    private ai: AiService,
+    private assessments: JobAssessmentService,
   ) {}
 
   @Get()
@@ -58,17 +58,42 @@ export class JobsController {
     const like = escapeLike(f.q);
     return this.db.asUser(userId, (q) =>
       q(
-        `select j.id, j.company, j.title, j.location, j.remote, j.workplace, j.employment_type, j.seniority,
+        `with eligible as (
+         select j.id, j.company, j.title, j.location, j.remote, j.workplace, j.employment_type, j.seniority,
                 j.url, j.posted_at, j.first_seen_at,
                 m.score, m.ai_score, m.filtered, m.status, m.tag_hits, b.kind as source,
-                d.id as draft_id, d.status as draft_status
+                d.id as draft_id, d.status as draft_status,
+                (d.id is not null or m.status <> 'new' or exists (select 1 from applications a where a.job_id = j.id)) as tracked,
+                case
+                  when parent.job_id is not null then 'manual:' || parent.canonical_job_id
+                  when children.linked then 'manual:' || j.id
+                  when r.duplicate_key is not null and not exists (
+                    select 1 from job_source_references repeated
+                    join jobs other on other.id = repeated.job_id and other.closed_at is null
+                    where md5(repeated.duplicate_key) = md5(r.duplicate_key) and repeated.duplicate_key = r.duplicate_key
+                    group by repeated.board_id having count(*) > 1
+                  ) then coalesce('manual:' || related_group.canonical_job_id, 'auto:' || r.duplicate_key)
+                  else 'job:' || j.id
+                end as group_key,
+                (parent.job_id is null) as preferred
          from job_matches m
          join jobs j on j.id = m.job_id
          join boards b on b.id = j.board_id
          left join application_drafts d on d.job_id = j.id
+         left join job_source_references r on r.board_id = j.board_id and r.external_id = j.external_id
+         left join job_duplicate_links parent on parent.job_id = j.id and parent.user_id = m.user_id
+         left join lateral (
+           select exists(select 1 from job_duplicate_links l where l.user_id = m.user_id and l.canonical_job_id = j.id) as linked
+         ) children on true
+         left join lateral (
+           select l.canonical_job_id
+           from job_duplicate_links l join job_source_references member on member.job_id in (l.job_id, l.canonical_job_id)
+           where l.user_id = m.user_id and member.duplicate_key = r.duplicate_key
+           group by l.canonical_job_id
+           order by l.canonical_job_id limit 1
+         ) related_group on true
          where j.closed_at is null
            and ($1::int is null or m.score >= $1)
-           and ($2 = 'all' and m.status <> 'dismissed' or m.status = $2)
            and ($3::text is null or j.title ilike $3 or j.company ilike $3 or j.location ilike $3)
            and ($4 or not m.filtered)
            and (cardinality($5::text[]) = 0
@@ -83,7 +108,39 @@ export class JobsController {
            and (cardinality($13::text[]) = 0 or j.countries && $13::text[]
                 or ('${EUROPE_WIDE}' = any(j.countries) and $13::text[] && $14::text[]))
            and ($15::text is null or j.location ilike $15)
-         order by coalesce(j.posted_at, j.first_seen_at) desc, coalesce(m.ai_score, m.score) desc
+         ), ranked as (
+           select eligible.*, row_number() over (
+             partition by group_key order by tracked desc, preferred desc, first_seen_at, id
+           ) as row_no, max(coalesce(posted_at, first_seen_at)) over (partition by group_key) as group_posted
+           from eligible
+         )
+         , catalogue as (
+           select id::text, company, title, location, remote, workplace, employment_type, seniority, url, posted_at,
+                  first_seen_at, score, ai_score, filtered, status, tag_hits, source, draft_id, draft_status,
+                  null::text as email_id, group_posted as sort_date
+           from ranked where (row_no = 1 or tracked) and ($2 = 'all' and status <> 'dismissed' or status = $2)
+           union all
+           select 'email:' || g.provider || ':' || g.external_id, coalesce(g.company, ''), coalesce(g.title, 'Job alert'),
+                  '', null, null, null, null, target.url, null, g.received_at, null, null, false, g.status,
+                  '{}'::text[], g.provider, null, null, g.external_id, g.received_at
+           from gmail_alert_jobs g
+           cross join lateral (select gmail_public_posting_url(g.provider,g.external_id,g.source_url) as url) target
+           where $16 and g.user_id = $17 and g.provider <> 'manual' and target.url is not null
+             and $2 = 'all'
+             and ($3::text is null or g.title ilike $3 or g.company ilike $3)
+             and cardinality($5::text[]) = 0 and cardinality($8::text[]) = 0
+             and cardinality($9::text[]) = 0 and cardinality($10::text[]) = 0
+             and cardinality($13::text[]) = 0 and $15::text is null
+             and ($7::interval is null or g.received_at >= now() - $7::interval)
+             and (cardinality($11::text[]) = 0 or g.provider = any($11))
+             and (cardinality($12::text[]) = 0 or g.company = any($12))
+             and not exists (
+               select 1 from eligible e join job_source_references r on r.job_id = e.id
+               where r.normalized_url = normalized_posting_url(target.url) and e.status <> 'dismissed'
+             )
+         )
+         select * from catalogue
+         order by sort_date desc, coalesce(ai_score, score) desc nulls last, id
          limit 1000`,
         [
           f.minScore ?? null,
@@ -101,6 +158,8 @@ export class JobsController {
           f.country,
           EUROPE,
           escapeLike(f.location),
+          f.includeEmail === 'true',
+          userId,
         ],
       ),
     );
@@ -134,7 +193,16 @@ export class JobsController {
         employment_type: await count('j.employment_type'),
         workplace: await count('j.workplace'),
         seniority: await count('j.seniority'),
-        source: await count('b.kind'),
+        source: await q(
+          `select value, sum(n)::int as n from (
+             select b.kind as value, count(*) as n ${base} and not m.filtered group by b.kind
+             union all
+             select provider, count(*) from gmail_alert_jobs where user_id = $1 and provider <> 'manual' group by provider
+           ) sources group by value order by n desc, value`, [userId],
+        ),
+        email_jobs: (await q(
+          "select count(*)::int as n from gmail_alert_jobs where user_id = $1 and provider <> 'manual'", [userId],
+        ))[0].n,
         company: await count('j.company'),
         country: await q(
           `select c as value, count(*)::int as n
@@ -150,7 +218,7 @@ export class JobsController {
     return this.db.asUser(userId, async (q) => {
       const [job] = await q(
         `select j.*, b.kind as source, m.score, m.filtered, m.reasons, m.unknowns, m.status,
-                m.ai_score, m.ai_assessment, m.ai_content_hash = j.content_hash as ai_current,
+                m.ai_score, m.ai_assessment,
                 d.id as draft_id, d.status as draft_status
          from job_matches m join jobs j on j.id = m.job_id join boards b on b.id = j.board_id
          left join application_drafts d on d.job_id = j.id
@@ -158,15 +226,113 @@ export class JobsController {
         [id],
       );
       if (!job) throw new NotFoundException();
-      const profile = await loadProfile(q, userId);
-      const prefs = await loadPrefs(q, userId);
-      const resumes = await loadResumes(q);
-      const settings = await q('select resume_builder_url from user_settings');
+      const context = await this.assessments.assessmentContext(q, userId, job);
+      const cached = await this.assessments.cachedAssessment(q, id, context.key);
       return {
         ...job,
-        resume: recommendResume(resumes, [...profile.skills, ...prefs.keywords], `${job.title}\n${job.description}`),
-        resume_builder_url: settings[0]?.resume_builder_url ?? '',
+        ai_score: cached?.score ?? job.ai_score,
+        ai_assessment: cached ?? job.ai_assessment,
+        ai_current: Boolean(cached),
+        resume: context.recommendation,
+        resume_builder_url: context.builderUrl,
       };
+    });
+  }
+
+  @Get(':id/sources')
+  async sources(@UserId() userId: string, @Param('id', ParseUUIDPipe) id: string) {
+    return this.db.asUser(userId, async (q) => {
+      if (!(await q('select 1 from job_matches where user_id = $1 and job_id = $2', [userId, id])).length) {
+        throw new NotFoundException();
+      }
+      return q(
+        `select b.kind, b.token, r.external_id, r.source_url, r.first_seen_at, r.last_seen_at
+         from job_source_references r join boards b on b.id = r.board_id
+         where r.job_id = $1 or (
+           exists (select 1 from job_matches m where m.job_id = r.job_id and m.user_id = $2)
+           and (
+             exists (select 1 from job_source_references source where source.job_id = $1 and source.duplicate_key = r.duplicate_key)
+             or exists (
+               select 1 from job_duplicate_links link where link.user_id = $2
+               and ((link.job_id = r.job_id and link.canonical_job_id = $1) or (link.job_id = $1 and link.canonical_job_id = r.job_id))
+             )
+           )
+         )
+         order by (r.job_id = $1) desc, r.first_seen_at, b.kind, r.external_id`,
+        [id, userId],
+      );
+    });
+  }
+
+  @Get(':id/email-alerts')
+  async emailAlerts(@UserId() userId: string, @Param('id', ParseUUIDPipe) id: string) {
+    return this.db.asUser(userId, async (q) => {
+      if (!(await q('select 1 from job_matches where user_id = $1 and job_id = $2', [userId, id])).length) {
+        throw new NotFoundException('Job not found.');
+      }
+      return q(
+        `select distinct g.provider, g.title, g.company, g.received_at, g.status
+         from job_source_references r join gmail_alert_jobs g on g.user_id = $2 and g.provider <> 'manual'
+         cross join lateral (select normalized_posting_url(gmail_public_posting_url(g.provider,g.external_id,g.source_url)) as url) target
+         where r.job_id = $1 and r.normalized_url is not null
+           and md5(target.url) = md5(r.normalized_url) and target.url = r.normalized_url
+         order by g.received_at desc limit 20`,
+        [id, userId],
+      );
+    });
+  }
+
+  @Get(':id/duplicates')
+  async duplicateCandidates(@UserId() userId: string, @Param('id', ParseUUIDPipe) id: string) {
+    return this.db.asUser(userId, async (q) => {
+      const [anchor] = await q(
+        'select j.* from jobs j join job_matches m on m.job_id = j.id where j.id = $1 and m.user_id = $2', [id, userId],
+      );
+      if (!anchor) throw new NotFoundException('Job not found.');
+      return q(
+        `select j.id, j.title, j.company, j.location, j.url, b.kind as source
+         from jobs j join job_matches m on m.job_id = j.id join boards b on b.id = j.board_id
+         where m.user_id = $1 and j.id <> $2 and j.closed_at is null
+           and not exists (select 1 from job_duplicate_links l where l.user_id = $1 and l.job_id = j.id)
+           and lower(btrim(j.company)) = lower(btrim($3)) and lower(btrim(j.title)) = lower(btrim($4))
+           and (lower(btrim(j.location)) = lower(btrim($5)) or (j.content_hash = $6 and j.description <> ''))
+         order by j.first_seen_at desc limit 12`,
+        [userId, id, anchor.company, anchor.title, anchor.location, anchor.content_hash],
+      );
+    });
+  }
+
+  @Post('duplicates/merge')
+  mergeDuplicates(@UserId() userId: string, @Body() body: unknown) {
+    const { canonicalId, duplicateId } = parse(z.object({ canonicalId: z.uuid(), duplicateId: z.uuid() }), body);
+    if (canonicalId === duplicateId) throw new BadRequestException('Choose two different jobs.');
+    return this.db.asUser(userId, async (q) => {
+      await q('select pg_advisory_xact_lock(hashtextextended($1, 0))', [userId]);
+      const rows = await q(
+        `select m.job_id, m.status,
+           (exists (select 1 from application_drafts d where d.user_id = $1 and d.job_id = m.job_id)
+             or exists (select 1 from applications a where a.user_id = $1 and a.job_id = m.job_id)) as has_application
+         from job_matches m where m.user_id = $1 and m.job_id = any($2::uuid[]) for update`,
+        [userId, [canonicalId, duplicateId]],
+      );
+      if (rows.length !== 2) throw new NotFoundException('One or both jobs are unavailable.');
+      if (rows.every((row) => row.has_application || row.status !== 'new')) {
+        throw new ConflictException('Both jobs have tracking history. Keep them separate.');
+      }
+      if ((await q(
+        `select 1 from job_duplicate_links
+         where user_id = $1 and (job_id = any($2::uuid[]) or canonical_job_id = $3)`,
+        [userId, [canonicalId, duplicateId], duplicateId],
+      )).length) throw new ConflictException('Use the original job as the main record when linking another posting.');
+      const tracked = rows.find((row) => row.has_application || row.status !== 'new');
+      const primary = tracked?.job_id ?? canonicalId;
+      const alias = primary === canonicalId ? duplicateId : canonicalId;
+      if (alias === canonicalId && (await q(
+        'select 1 from job_duplicate_links where user_id = $1 and canonical_job_id = $2', [userId, alias],
+      )).length) throw new ConflictException('The jobs already belong to different groups.');
+      await q('insert into job_duplicate_links (user_id, job_id, canonical_job_id) values ($1, $2, $3)', [userId, alias, primary]);
+      await audit(q, userId, 'job.duplicates_linked', primary, { duplicate_id: alias });
+      return { id: primary };
     });
   }
 
@@ -180,41 +346,8 @@ export class JobsController {
     });
   }
 
-  /** Stage 2: optional AI assessment of one job. Cached until the posting changes. */
   @Post(':id/assess')
-  async assess(@UserId() userId: string, @Param('id', ParseUUIDPipe) id: string) {
-    const ctx = await this.db.asUser(userId, async (q) => {
-      const [job] = await q(
-        `select j.*, m.ai_assessment, m.ai_content_hash from job_matches m join jobs j on j.id = m.job_id where j.id = $1`,
-        [id],
-      );
-      if (!job) throw new NotFoundException();
-      const profile = await loadProfile(q, userId);
-      const prefs = await loadPrefs(q, userId);
-      const resumes = await loadResumes(q);
-      const rec = recommendResume(resumes, [...profile.skills, ...prefs.keywords], `${job.title}\n${job.description}`);
-      const resumeText = resumes.find((r) => r.id === rec.resumeId)?.extracted_text ?? '';
-      return { job, profile, prefs, resumeText };
-    });
-    if (ctx.job.ai_assessment && ctx.job.ai_content_hash === ctx.job.content_hash) {
-      return { ...ctx.job.ai_assessment, cached: true };
-    }
-    const result = await this.ai.run(userId, {
-      task: 'assess',
-      promptVersion: ASSESS_VERSION,
-      system: ASSESS_SYSTEM,
-      user: `${candidateBlock(ctx.profile, ctx.prefs, ctx.resumeText)}\n\n${jobBlock(ctx.job)}`,
-      maxTokens: 1200,
-    });
-    const assessment = parseAssessment(result.text);
-    if (!assessment) return { error: 'The model did not return a valid assessment. Try again or use another model.' };
-    await this.db.asUser(userId, async (q) => {
-      await q(
-        `update job_matches set ai_score = $2, ai_assessment = $3, ai_content_hash = $4 where job_id = $1`,
-        [id, assessment.score, JSON.stringify({ ...assessment, model: result.model }), ctx.job.content_hash],
-      );
-      await audit(q, userId, 'job.assessed', id, { model: result.model, score: assessment.score });
-    });
-    return { ...assessment, model: result.model, cached: false };
+  assess(@UserId() userId: string, @Param('id', ParseUUIDPipe) id: string) {
+    return this.assessments.assess(userId, id);
   }
 }

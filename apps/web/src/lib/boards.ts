@@ -7,6 +7,7 @@ export const BOARD_LABEL: Record<string, string> = {
   recruitee: 'Recruitee',
   workable: 'Workable',
   smartrecruiters: 'SmartRecruiters',
+  arbeitnow: 'Arbeitnow',
 };
 
 export const BOARD_FORMATS: [string, string][] = [
@@ -17,4 +18,5 @@ export const BOARD_FORMATS: [string, string][] = [
   ['Recruitee', '<company>.recruitee.com'],
   ['Workable', 'apply.workable.com/<company>'],
   ['SmartRecruiters', 'jobs.smartrecruiters.com/<company>'],
+  ['Arbeitnow', 'www.arbeitnow.com'],
 ];
