@@ -13,6 +13,23 @@ const h = new Harness();
 before(() => h.start());
 after(() => h.stop());
 
+test('Job Explorer lists board jobs while imported alerts stay in Email Management', async () => {
+  const owner = await h.user();
+  const { jobId } = await h.seedJob([owner]);
+  await h.owner.query(
+    `insert into gmail_alert_jobs (user_id, provider, external_id, title, received_at)
+     values ($1, 'indeed', '0123456789abcdef', 'Email-only engineer', now())`, [owner.id],
+  );
+  await owner.call('POST', '/me/sources/sync');
+  const jobs = await owner.call('GET', '/me/jobs?minScore=0&includeEmail=true');
+  assert.equal(jobs.status, 200);
+  assert.deepEqual(jobs.body.map((row: { id: string }) => row.id), [jobId]);
+  const facets = await owner.call('GET', '/me/jobs/facets?minScore=0');
+  assert.deepEqual(facets.body.source.map((row: { value: string }) => row.value), ['greenhouse']);
+  const email = await owner.call('GET', '/me/gmail/jobs?provider=indeed');
+  assert.equal(email.body[0].title, 'Email-only engineer');
+});
+
 test('board refresh records source references, duplicates and changes without replacing the job', async () => {
   const owner = await h.user();
   const outsider = await h.user();

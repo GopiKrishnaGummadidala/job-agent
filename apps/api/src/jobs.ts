@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { JobAssessmentService } from './ai/job-assessment.service';
 import { AuthGuard, parse, UserId } from './auth';
 import { audit, Db } from './db';
-import { providers as emailProviders } from './gmail-alerts';
 import { loadPrefs, loadProfile } from './matching/matching.service';
 import { BOARD_KINDS } from './sources/adapters';
 import { EMPLOYMENT_TYPES, SENIORITIES, WORKPLACES } from './sources/classify';
@@ -33,8 +32,7 @@ const listQuery = z.object({
   type: list(z.enum(EMPLOYMENT_TYPES)),
   workplace: list(z.enum(WORKPLACES)),
   seniority: list(z.enum(SENIORITIES)),
-  source: list(z.enum([...BOARD_KINDS, ...emailProviders])),
-  includeEmail: z.enum(['true', 'false']).default('false'),
+  source: list(z.enum(BOARD_KINDS)),
   company: list(z.string().max(200), false),
   /** ISO country codes; a country also matches Europe-wide postings when it is in Europe. */
   country: list(z.string().regex(/^[A-Z]{2}$/)),
@@ -114,33 +112,10 @@ export class JobsController {
            ) as row_no, max(coalesce(posted_at, first_seen_at)) over (partition by group_key) as group_posted
            from eligible
          )
-         , catalogue as (
-           select id::text, company, title, location, remote, workplace, employment_type, seniority, url, posted_at,
-                  first_seen_at, score, ai_score, filtered, status, tag_hits, source, draft_id, draft_status,
-                  null::text as email_id, group_posted as sort_date
-           from ranked where (row_no = 1 or tracked) and ($2 = 'all' and status <> 'dismissed' or status = $2)
-           union all
-           select 'email:' || g.provider || ':' || g.external_id, coalesce(g.company, ''), coalesce(g.title, 'Job alert'),
-                  '', null, null, null, null, target.url, null, g.received_at, null, null, false, g.status,
-                  '{}'::text[], g.provider, null, null, g.external_id, g.received_at
-           from gmail_alert_jobs g
-           cross join lateral (select gmail_public_posting_url(g.provider,g.external_id,g.source_url) as url) target
-           where $16 and g.user_id = $17 and g.provider <> 'manual' and target.url is not null
-             and $2 = 'all'
-             and ($3::text is null or g.title ilike $3 or g.company ilike $3)
-             and cardinality($5::text[]) = 0 and cardinality($8::text[]) = 0
-             and cardinality($9::text[]) = 0 and cardinality($10::text[]) = 0
-             and cardinality($13::text[]) = 0 and $15::text is null
-             and ($7::interval is null or g.received_at >= now() - $7::interval)
-             and (cardinality($11::text[]) = 0 or g.provider = any($11))
-             and (cardinality($12::text[]) = 0 or g.company = any($12))
-             and not exists (
-               select 1 from eligible e join job_source_references r on r.job_id = e.id
-               where r.normalized_url = normalized_posting_url(target.url) and e.status <> 'dismissed'
-             )
-         )
-         select * from catalogue
-         order by sort_date desc, coalesce(ai_score, score) desc nulls last, id
+         select id, company, title, location, remote, workplace, employment_type, seniority, url, posted_at,
+                first_seen_at, score, ai_score, filtered, status, tag_hits, source, draft_id, draft_status
+         from ranked where (row_no = 1 or tracked) and ($2 = 'all' and status <> 'dismissed' or status = $2)
+         order by group_posted desc, coalesce(ai_score, score) desc, id
          limit 1000`,
         [
           f.minScore ?? null,
@@ -158,8 +133,6 @@ export class JobsController {
           f.country,
           EUROPE,
           escapeLike(f.location),
-          f.includeEmail === 'true',
-          userId,
         ],
       ),
     );
@@ -193,16 +166,7 @@ export class JobsController {
         employment_type: await count('j.employment_type'),
         workplace: await count('j.workplace'),
         seniority: await count('j.seniority'),
-        source: await q(
-          `select value, sum(n)::int as n from (
-             select b.kind as value, count(*) as n ${base} and not m.filtered group by b.kind
-             union all
-             select provider, count(*) from gmail_alert_jobs where user_id = $1 and provider <> 'manual' group by provider
-           ) sources group by value order by n desc, value`, [userId],
-        ),
-        email_jobs: (await q(
-          "select count(*)::int as n from gmail_alert_jobs where user_id = $1 and provider <> 'manual'", [userId],
-        ))[0].n,
+        source: await count('b.kind'),
         company: await count('j.company'),
         country: await q(
           `select c as value, count(*)::int as n
@@ -259,24 +223,6 @@ export class JobsController {
            )
          )
          order by (r.job_id = $1) desc, r.first_seen_at, b.kind, r.external_id`,
-        [id, userId],
-      );
-    });
-  }
-
-  @Get(':id/email-alerts')
-  async emailAlerts(@UserId() userId: string, @Param('id', ParseUUIDPipe) id: string) {
-    return this.db.asUser(userId, async (q) => {
-      if (!(await q('select 1 from job_matches where user_id = $1 and job_id = $2', [userId, id])).length) {
-        throw new NotFoundException('Job not found.');
-      }
-      return q(
-        `select distinct g.provider, g.title, g.company, g.received_at, g.status
-         from job_source_references r join gmail_alert_jobs g on g.user_id = $2 and g.provider <> 'manual'
-         cross join lateral (select normalized_posting_url(gmail_public_posting_url(g.provider,g.external_id,g.source_url)) as url) target
-         where r.job_id = $1 and r.normalized_url is not null
-           and md5(target.url) = md5(r.normalized_url) and target.url = r.normalized_url
-         order by g.received_at desc limit 20`,
         [id, userId],
       );
     });

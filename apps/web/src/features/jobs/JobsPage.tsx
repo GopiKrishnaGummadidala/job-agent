@@ -57,7 +57,7 @@ const SENIORITY_LABEL: Record<string, string> = {
   staff: 'Staff / principal',
   lead: 'Lead / manager',
 };
-const SOURCE_LABEL: Record<string, string> = { ...BOARD_LABEL, linkedin: 'LinkedIn email', indeed: 'Indeed email', glassdoor: 'Glassdoor email', stepstone: 'StepStone email' };
+const SOURCE_LABEL = BOARD_LABEL;
 
 /** URL keys for list filters; each value is a repeated search parameter. */
 const LIST_KEYS = ['country', 'type', 'workplace', 'seniority', 'source', 'company', 'tags'] as const;
@@ -133,7 +133,6 @@ function MultiSelect({
 }
 
 export function JobsPage() {
-  const navigate = useNavigate();
   const qc = useQueryClient();
   const [params, setParams] = useSearchParams();
   const profile = useQuery({ queryKey: ['profile'], queryFn: () => api('/me/profile') });
@@ -166,7 +165,6 @@ export function JobsPage() {
   const apiQuery = useMemo(() => {
     const s = new URLSearchParams();
     s.set('minScore', String(minScore));
-    s.set('includeEmail', 'true');
     s.set('status', get('status', 'all'));
     s.set('posted', get('posted', 'any'));
     s.set('includeFiltered', String(get('hidden') === '1'));
@@ -199,7 +197,7 @@ export function JobsPage() {
       headerName: 'Match',
       width: 80,
       valueGetter: (_, row) => row.ai_score ?? row.score,
-      renderCell: (p) => p.row.email_id ? <Chip size="small" label="Email" variant="outlined" /> : (
+      renderCell: (p) => (
         <Tooltip title={p.row.ai_score != null ? `AI score (rule score ${p.row.score})` : 'Rule-based score'}>
           <Chip size="small" label={p.value} color={p.value >= 70 ? 'success' : p.value >= 40 ? 'warning' : 'default'} icon={p.row.ai_score != null ? <Sparkles size={12} /> : undefined} />
         </Tooltip>
@@ -225,7 +223,7 @@ export function JobsPage() {
     },
     {
       field: 'posted',
-      headerName: 'Posted / received',
+      headerName: 'Posted',
       width: 110,
       type: 'dateTime',
       valueGetter: (_, row) => new Date(row.posted_at ?? row.first_seen_at),
@@ -236,9 +234,7 @@ export function JobsPage() {
       headerName: 'Application',
       width: 140,
       renderCell: (p) =>
-        p.row.email_id ? (
-          <Chip size="small" label={String(p.row.status).replace(/^./, (letter) => letter.toUpperCase())} variant="outlined" />
-        ) : p.value ? (
+        p.value ? (
           <Chip size="small" label={statusLabel[p.value]} color={statusColor[p.value]} variant="outlined" />
         ) : p.row.status === 'saved' ? (
           <Chip size="small" label="Saved" variant="outlined" />
@@ -252,7 +248,7 @@ export function JobsPage() {
     <>
       <PageHeader
         title="Job Explorer"
-        subtitle="Board postings and Gmail alerts, newest first. Email alerts use the date received."
+        subtitle="Jobs from your boards, newest first."
         actions={
           <Button startIcon={<RefreshCw size={16} />} onClick={() => sync.mutate()} disabled={sync.isPending || noBoards}>
             {sync.isPending ? 'Refreshing…' : 'Refresh boards'}
@@ -271,18 +267,13 @@ export function JobsPage() {
         </Alert>
       )}
 
-      {noBoards && !f?.email_jobs ? (
+      {noBoards ? (
         <EmptyState title="No job boards yet" action={<Button component={RouterLink} to="/settings" variant="contained">Add a job board</Button>}>
           Job Explorer searches the boards you add. Paste a company's careers page from Greenhouse, Lever or Ashby in Sources &amp; Settings,
           for example https://job-boards.greenhouse.io/gitlab.
         </EmptyState>
       ) : (
         <>
-          {!!f?.email_jobs && (
-            <Typography variant="body2" color="text.secondary" className="mb-2">
-              Email alerts appear in unscored results. Location, job type, seniority, and CV tag filters require posting details.
-            </Typography>
-          )}
           <Paper className="mb-3 flex flex-col gap-3 p-4">
             <Box className="flex flex-wrap items-center gap-2">
               <Typography variant="body2" color="text.secondary" id="posted-label" className="mr-1">Date posted</Typography>
@@ -399,9 +390,9 @@ export function JobsPage() {
             <ErrorAlert error={jobs.error} />
           ) : jobs.data!.length === 0 ? (
             <EmptyState
-              title={f?.total_open === 0 && !f?.email_jobs ? 'Your boards have no open jobs' : 'No jobs match these filters'}
+              title={f?.total_open === 0 ? 'Your boards have no open jobs' : 'No jobs match these filters'}
               action={
-                f?.total_open === 0 && !f?.email_jobs ? (
+                f?.total_open === 0 ? (
                   <Button variant="contained" onClick={() => sync.mutate()} disabled={sync.isPending}>Refresh boards</Button>
                 ) : (
                   <Box className="flex flex-wrap justify-center gap-2">
@@ -419,7 +410,7 @@ export function JobsPage() {
                   The other filters above narrow it further.
                 </>
               )}
-              {f?.total_open === 0 && !f?.email_jobs && 'Refresh to fetch the latest postings, or add more boards in Sources & Settings.'}
+              {f?.total_open === 0 && 'Refresh to fetch the latest postings, or add more boards in Sources & Settings.'}
             </EmptyState>
           ) : (
             <Paper sx={{ height: 'calc(100vh - 400px)', minHeight: 420 }}>
@@ -428,10 +419,7 @@ export function JobsPage() {
                 columns={columns}
                 density="compact"
                 disableRowSelectionOnClick
-                onRowClick={(p) => {
-                  if (p.row.email_id) navigate('/email/' + p.row.source + '?' + new URLSearchParams({ posting: p.row.email_id }));
-                  else update({ job: String(p.id) });
-                }}
+                onRowClick={(p) => update({ job: String(p.id) })}
                 initialState={{
                   pagination: { paginationModel: { pageSize: 50 } },
                   sorting: { sortModel: [{ field: 'posted', sort: 'desc' }] },
@@ -459,10 +447,6 @@ function JobDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const sources = useQuery({
     queryKey: ['job', id, 'sources'],
     queryFn: () => api<{ kind: string; token: string; external_id: string; source_url: string }[]>(`/me/jobs/${id}/sources`),
-  });
-  const alertSources = useQuery({
-    queryKey: ['job', id, 'email-alerts'],
-    queryFn: () => api<{ provider: string; title: string | null; company: string | null; received_at: string; status: string }[]>(`/me/jobs/${id}/email-alerts`),
   });
   const duplicates = useQuery({
     queryKey: ['job', id, 'duplicates'], enabled: reviewDuplicates,
@@ -558,16 +542,6 @@ function JobDetail({ id, onClose }: { id: string; onClose: () => void }) {
           </Box>
         )}
         <ErrorAlert error={sources.error} />
-        {!!alertSources.data?.length && (
-          <Box className="mb-4">
-            <Typography variant="subtitle2">Matching email alerts</Typography>
-            {alertSources.data.map((alert) => (
-              <Button key={JSON.stringify(alert)} size="small" component={RouterLink} to={'/email/' + alert.provider}>
-                {alert.provider === 'linkedin' ? 'LinkedIn' : alert.provider === 'stepstone' ? 'StepStone' : alert.provider === 'glassdoor' ? 'Glassdoor' : 'Indeed'} · {alert.status}
-              </Button>
-            ))}
-          </Box>
-        )}
         <Box className="mb-4">
           <Button size="small" aria-expanded={reviewDuplicates} onClick={() => setReviewDuplicates(!reviewDuplicates)}>
             {reviewDuplicates ? 'Hide possible duplicates' : 'Review possible duplicates'}
